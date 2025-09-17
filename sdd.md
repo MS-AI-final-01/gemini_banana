@@ -1,4 +1,4 @@
-# SDD: AI Virtual Try‑On (FastAPI + React/Vite)
+﻿# SDD: AI Virtual Try‑On (FastAPI + React/Vite)
 
 Purpose: Single source of truth for scope, requirements, design, and tasks. Updated to reflect current Phase‑1 (Could → 1차) progress.
 
@@ -47,7 +47,6 @@ Guardrails
 - S3: 스타일 팁 `/api/tips` (Azure OpenAI 우선, Fallback 제공)
 - S4: 결과 평가 `/api/evaluate` (0–100 점수)
 - S5: 외부 추천기 브릿지 `/api/recommend/by-positions` (선택)
-- S6: CSV 인입 → `data/catalog.json`, 투명 배경 이미지 선별 도구
 - S7: 프론트 UI: 업로드/히스토리/추천/공유/평가
 
 ### 2.2 Out‑of‑Scope
@@ -98,9 +97,8 @@ Guardrails
 - Optional microservice: 외부 추천기(FastAPI; positions 기반)
 
 ### 5.2 Key Modules
-- Services: `azure_openai_service`, `llm_ranker`, `external_recommender`
+- Services: `azure_openai_service`, `llm_ranker`, `product_index`, `db_recommender`
 - Routes: `generate`, `recommend`, `tips`, `evaluate`, `recommend_positions`
-- Tools: `ingest_csv_to_catalog.py`, `select_transparent_images.py`
 
 ### 5.3 API Sketch
 - POST `/api/tips` → `{ tips: string[], source, score?, requestId, timestamp }`
@@ -123,7 +121,7 @@ Guardrails
 | T1.3 | Share PNG 유틸 | R5 | html2canvas, 다중 사이즈 | Done |
 | T2.1 | 히스토리 중복 가드 | R6 | 전역 디듀프 + 가드 | Done |
 | T3.1 | 외부 추천기 브릿지 | R2 | `/api/recommend/by-positions` | Done |
-| T4.1 | CSV Ingest + 선별 도구 | S6 | 문서화/유틸 | Done |
+| T4.1 | DB-only 추천 전환 | R2 | 파일 기반 경로 제거, DB 의존 고정 | Done |
 
 Milestones
 - M1 Phase‑1 Could: Tips/Evaluate/Share + 안정화 (완료)

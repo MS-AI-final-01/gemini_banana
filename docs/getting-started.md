@@ -49,7 +49,6 @@ backend_py/                 # FastAPI 백엔드
     routes/                 # API 라우트 (generate, recommend, health, proxy)
     services/               # Gemini/Azure/OpenAI 연계 서비스
 frontend/                   # React 프론트엔드
-data/catalog.json           # 추천 카탈로그 데이터
 docs/                       # 문서
 ```
 

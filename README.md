@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 <img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
 
@@ -11,7 +11,7 @@ View in AI Studio: https://ai.studio/apps/drive/1ORGriwJMQVw1Sd-cSjddK7sGBrrm_B6
 ## What’s Included
 - Backend: FastAPI with routes for generate, recommendations, style tips, history evaluation, proxy/image tools
 - Frontend: React 19 + Vite 6 + Tailwind
-- Tools: CSV ingest to catalog, transparent‑background image selector
+- Product data: PostgreSQL-backed recommender cache (loaded via `db_recommender`)
 - Docker: Dev and Prod compose files
 
 ## Prerequisites
@@ -34,7 +34,7 @@ Frontend (Vite)
   - `npm install` (or `npm ci`)
   - `npm run dev` (opens on 5173)
 
-Tip: `scripts/quickstart.ps1` installs frontend deps, prepares backend venv, ingests CSVs if present, and starts both.
+Tip: `scripts/quickstart.ps1` installs frontend deps, prepares the backend venv, and starts both services.
 
 ## Endpoints
 - `GET /health`
@@ -45,7 +45,7 @@ Tip: `scripts/quickstart.ps1` installs frontend deps, prepares backend venv, ing
 - `POST /api/try-on/video`
 - `POST /api/try-on/video/status`
 - `POST /api/evaluate`
-- `POST /api/recommend/by-positions` (optional, external recommender bridge)
+- `POST /api/recommend/by-positions` (DB-backed similar items by numeric positions)
 
 ## Configuration
 Copy `backend_py/.env.example` to `backend_py/.env` and set keys as needed.
@@ -53,7 +53,6 @@ Copy `backend_py/.env.example` to `backend_py/.env` and set keys as needed.
 - Azure OpenAI (optional): `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_KEY`, `AZURE_OPENAI_DEPLOYMENT_ID`
 - Gemini (optional): `GEMINI_API_KEY`, `GEMINI_FIXED_PROMPT`, `GEMINI_TEMPERATURE`
 - Vertex AI video generation (optional): `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, `VERTEX_MODEL_ID`, `VERTEX_API_ENDPOINT`, `GOOGLE_APPLICATION_CREDENTIALS`
-- External recommender (optional): `RECOMMENDER_URL`, `RECOMMENDER_TIMEOUT`
 
 Frontend dev uses `VITE_API_URL` when provided; otherwise defaults to `http://localhost:3001` via `vite.config.ts`.
 Optional frontend flags: `VITE_FEATURE_VIDEO`, `VITE_VIDEO_PROMPT`, `VITE_VIDEO_ASPECT`, `VITE_VIDEO_DURATION`, `VITE_VIDEO_RESOLUTION`.
@@ -62,15 +61,9 @@ Optional frontend flags: `VITE_FEATURE_VIDEO`, `VITE_VIDEO_PROMPT`, `VITE_VIDEO_
 - Dev: `docker compose -f docker-compose.dev.yml up`
 - Prod: `docker compose up -d`
 
-## Data Prep
-- CSV → catalog.json: `python backend_py/tools/ingest_csv_to_catalog.py`
-- Transparent‑only selection: `python backend_py/tools/select_transparent_images.py --input real_data/images --output real_data_no_bg --extensions .png .webp`
-  - Details: `docs/data-prep-transparent-images.md`
-
 ## Troubleshooting
 - Vite not found: `cd frontend && npm install`
 - npm ERESOLVE: ensure `@testing-library/react@^16` then reinstall; as fallback use `npm install --legacy-peer-deps`
 - Import error `ModuleNotFoundError: app`: run from `backend_py` or use `uvicorn backend_py.app.main:app` at repo root
 - Windows EOL warning on `git add`: harmless; use `.gitattributes` to normalize
 - Root Node workspace was removed — run all Node commands inside `frontend/`. Use `backend_py/.venv` only
-

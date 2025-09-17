@@ -1,4 +1,4 @@
-# 가상 피팅 기반 상품 추천 시스템
+﻿# 가상 피팅 기반 상품 추천 시스템
 
 ## 🎯 새로운 기능
 
@@ -100,7 +100,6 @@ npm run dev
 ### 새로 추가된 파일
 - `backend_py/app/routes/recommend.py`: 추천 로직 (가상 피팅 기반 분석 포함)
 - `components/RecommendationDisplay.tsx`: 추천 상품 표시 컴포넌트
-- `data/catalog.json`: 확장된 상품 카탈로그 (10개 샘플)
 
 ### 수정된 파일
 - 루트 `server.js`: 레거시(제거됨). FastAPI가 `/api/recommend-from-fitting` 포함 추천 관련 엔드포인트를 제공합니다.

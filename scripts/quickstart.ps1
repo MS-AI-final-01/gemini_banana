@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 function Write-Step($msg) { Write-Host "[SETUP] $msg" -ForegroundColor Cyan }
@@ -27,29 +27,7 @@ node scripts/run_backend_py.js --no-start 2>$null 1>$null
 # scripts/run_backend_py.js will install deps when starting; if --no-start is passed, ignore errors
 Write-Ok "Python environment prepared"
 
-# 4) Ingest real_data CSVs into data/catalog.json
-Write-Step "Ingesting CSVs from real_data into data/catalog.json (if present)"
-$ingest = 'python backend_py/tools/ingest_csv_to_catalog.py'
-if (Test-Path 'real_data') {
-  # Known male datasets (파일명 기반 자동 카테고리 매핑)
-  if (Test-Path 'real_data/man/musinsa_man_top.csv')    { iex "$ingest --input 'real_data/man/musinsa_man_top.csv' --output data/catalog.json --merge-existing" }
-  if (Test-Path 'real_data/man/musinsa_man_bottom.csv') { iex "$ingest --input 'real_data/man/musinsa_man_bottom.csv' --output data/catalog.json --merge-existing" }
-  if (Test-Path 'real_data/man/musinsa_man_shoes.csv')  { iex "$ingest --input 'real_data/man/musinsa_man_shoes.csv' --output data/catalog.json --merge-existing" }
-  if (Test-Path 'real_data/man/musinsa_man_outer.csv')  { iex "$ingest --input 'real_data/man/musinsa_man_outer.csv' --output data/catalog.json --merge-existing" }
-  # Known female datasets (파일명 기반 자동 카테고리 매핑)
-  if (Test-Path 'real_data/woman/musinsa_woman_top.csv')    { iex "$ingest --input 'real_data/woman/musinsa_woman_top.csv' --output data/catalog.json --merge-existing" }
-  if (Test-Path 'real_data/woman/musinsa_woman_bottom.csv') { iex "$ingest --input 'real_data/woman/musinsa_woman_bottom.csv' --output data/catalog.json --merge-existing" }
-  if (Test-Path 'real_data/woman/musinsa_woman_shoes.csv')  { iex "$ingest --input 'real_data/woman/musinsa_woman_shoes.csv' --output data/catalog.json --merge-existing" }
-  if (Test-Path 'real_data/woman/musinsa_woman_outer.csv')  { iex "$ingest --input 'real_data/woman/musinsa_woman_outer.csv' --output data/catalog.json --merge-existing" }
-  if (Test-Path 'real_data/woman/musinsa_woman_dress_skirt.csv') { iex "$ingest --input 'real_data/woman/musinsa_woman_dress_skirt.csv' --output data/catalog.json --merge-existing" }
-  # Fallback: scan any remaining CSVs recursively
-  iex $ingest
-  Write-Ok "Ingest complete"
-} else {
-  Write-Warn "real_data folder not found. Skipping ingest."
-}
-
-# 5) Start Python backend (port 3001) + Frontend (5173) concurrently
+# 4) Start Python backend (port 3001) + Frontend (5173) concurrently
 Write-Step "Starting Python backend (3001) and Frontend (5173)"
 npx concurrently --names "PY,FRONTEND" --prefix-colors "magenta,green" `
   "node scripts/run_backend_py.js" `

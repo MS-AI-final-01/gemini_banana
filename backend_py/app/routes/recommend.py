@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, HTTPException, Response
 
 from ..models import (
     CategoryRecommendations,
@@ -12,8 +12,7 @@ from ..models import (
     RecommendationResponse,
 )
 from ..services.azure_openai_service import azure_openai_service
-from ..services.catalog import get_catalog_service
-from ..services.db_recommender import db_pos_recommender
+from ..services.product_index import product_index
 from ..services.llm_ranker import llm_ranker
 
 router = APIRouter(prefix="/api/recommend", tags=["Recommendations"])
@@ -21,7 +20,12 @@ router = APIRouter(prefix="/api/recommend", tags=["Recommendations"])
 
 @router.get("/status")
 def status():
-    stats = get_catalog_service().stats()
+    catalog_available = product_index.available()
+    stats = product_index.stats() if catalog_available else {
+        "totalProducts": 0,
+        "categories": {},
+        "priceRange": {"min": 0, "max": 0, "average": 0},
+    }
     return {
         "aiService": {
             "azureOpenAI": {
@@ -35,86 +39,40 @@ def status():
             },
         },
         "catalogService": {
-            "available": stats.get("totalProducts", 0) > 0,
+            "available": catalog_available,
             "productCount": stats.get("totalProducts", 0),
+            "categories": stats.get("categories", {}),
+            "priceRange": stats.get("priceRange", {}),
         },
     }
 
-
 @router.get("/catalog")
 def catalog_stats():
-    return get_catalog_service().stats()
+    if not product_index.available():
+        raise HTTPException(status_code=503, detail="Product catalog unavailable")
+    return product_index.stats()
 
 @router.get("/random")
-def random_products(limit: int = 18, category: str | None = None, gender: str | None = None, response: Response = None):
-    # Prefer DB-backed products when available, otherwise use catalog JSON
-    if db_pos_recommender.available():
-        products = list(db_pos_recommender.products)
-        source = "db"
-    else:
-        svc = get_catalog_service()
-        products = svc.get_all()
-        source = "catalog"
+def random_products(
+    limit: int = 18,
+    category: str | None = None,
+    gender: str | None = None,
+    *,
+    response: Response,
+):
+    if not product_index.available():
+        raise HTTPException(status_code=503, detail="Product catalog unavailable")
 
-    def norm_slot(s: str) -> str:
-        c = (s or "").strip().lower()
-        if not c:
-            return "unknown"
-        
-        # DB 카테고리 매핑만 사용
-        if c in ["man_outer", "woman_outer"]:
-            return "outer"
-        elif c in ["man_top", "woman_top"]:
-            return "top"
-        elif c in ["man_bottom", "woman_bottom"]:
-            return "pants"
-        elif c in ["man_shoes", "woman_shoes"]:
-            return "shoes"
-        elif c == "woman_dress_skirt":
-            return "pants"  # 드레스/스커트는 하의로 분류
-        
-        # 알 수 없는 카테고리는 그대로 반환
-        return c
-
-    if category:
-        req_slot = norm_slot(category)
-        products = [p for p in products if norm_slot(str(p.get("category") or "")) == req_slot]
-
-    if gender:
-        gq = (gender or "").strip().lower()
-        def norm_gender(s: str) -> str:
-            c = (s or "").strip().lower()
-            if not c: return "unknown"
-            if any(k in c for k in ["male","man","men","m","남","남성","남자"]): return "male"
-            if any(k in c for k in ["female","woman","women","w","여","여성","여자"]): return "female"
-            if any(k in c for k in ["unisex","uni","男女","공용","유니섹스"]): return "unisex"
-            if any(k in c for k in ["kid","kids","child","children","아동","키즈"]): return "kids"
-            return c
-        products = [p for p in products if norm_gender(str(p.get("gender") or "")) == norm_gender(gq)]
-
-    import random
-    random.shuffle(products)
-    result = []
-    for p in products[: min(max(limit, 1), 100)]:
-        item = {
-            "id": str(p.get("id")),
-            "title": p.get("title") or "",
-            "price": int(p.get("price") or 0),
-            "imageUrl": p.get("imageUrl"),
-            "productUrl": p.get("productUrl"),
-            "tags": p.get("tags") or [],
-            "category": p.get("category") or "top",
-        }
-        result.append(item)
     try:
-        if response is not None:
-            response.headers["X-Rec-Source"] = source
-            if gender:
-                response.headers["X-Rec-Gender"] = (gender or "").lower()
-    except Exception:
-        pass
-    return result
+        items = product_index.random_products(limit=limit, category=category, gender=gender)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
+    response.headers["X-Rec-Source"] = "db"
+    if gender:
+        response.headers["X-Rec-Gender"] = (gender or "").lower()
+
+    return items
 
 @router.post("")
 def recommend_from_upload(req: RecommendationRequest) -> RecommendationResponse:
@@ -136,17 +94,20 @@ def recommend_from_upload(req: RecommendationRequest) -> RecommendationResponse:
                 if getattr(req.clothingItems, k) is not None:
                     analysis.setdefault(k, []).extend([k, "basic", "casual"])
 
-    svc = get_catalog_service()
+    if not product_index.available():
+        raise HTTPException(status_code=503, detail="Product catalog unavailable")
     opts = req.options or {}
-    # get more candidates for potential LLM rerank
-    candidate_recs = svc.find_similar(
-        analysis,
-        max_per_category=(opts.maxPerCategory or 3) * 4 if hasattr(opts, "maxPerCategory") else 12,
-        include_score=True,
-        min_price=getattr(opts, "minPrice", None),
-        max_price=getattr(opts, "maxPrice", None),
-        exclude_tags=getattr(opts, "excludeTags", None),
-    )
+    try:
+        candidate_recs = product_index.find_similar(
+            analysis,
+            max_per_category=(opts.maxPerCategory or 3) * 4 if hasattr(opts, "maxPerCategory") else 12,
+            include_score=True,
+            min_price=getattr(opts, "minPrice", None),
+            max_price=getattr(opts, "maxPrice", None),
+            exclude_tags=getattr(opts, "excludeTags", None),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
     # Optional LLM rerank (default to Azure OpenAI when configured)
     max_k = (opts.maxPerCategory or 3) if hasattr(opts, "maxPerCategory") else 3
@@ -204,16 +165,20 @@ def recommend_from_fitting(req: RecommendationFromFittingRequest) -> Recommendat
             analysis_method = "ai"
         except Exception:
             analysis_method = "fallback"
-    svc = get_catalog_service()
+    if not product_index.available():
+        raise HTTPException(status_code=503, detail="Product catalog unavailable")
     opts = req.options or {}
-    candidate_recs = svc.find_similar(
-        analysis,
-        max_per_category=(opts.maxPerCategory or 3) * 4 if hasattr(opts, "maxPerCategory") else 12,
-        include_score=True,
-        min_price=getattr(opts, "minPrice", None),
-        max_price=getattr(opts, "maxPrice", None),
-        exclude_tags=getattr(opts, "excludeTags", None),
-    )
+    try:
+        candidate_recs = product_index.find_similar(
+            analysis,
+            max_per_category=(opts.maxPerCategory or 3) * 4 if hasattr(opts, "maxPerCategory") else 12,
+            include_score=True,
+            min_price=getattr(opts, "minPrice", None),
+            max_price=getattr(opts, "maxPrice", None),
+            exclude_tags=getattr(opts, "excludeTags", None),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
     max_k = (opts.maxPerCategory or 3) if hasattr(opts, "maxPerCategory") else 3
     user_llm_pref = getattr(opts, "useLLMRerank", None)
@@ -251,3 +216,4 @@ def recommend_from_fitting(req: RecommendationFromFittingRequest) -> Recommendat
         requestId=f"req_{int(datetime.utcnow().timestamp())}",
         timestamp=datetime.utcnow().isoformat() + "Z",
     )
+
