@@ -1,0 +1,82 @@
+name: build-and-deploy-2apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  RESOURCE_GROUP: ${{ secrets.AZURE_RG }}
+  WEBAPP_API: ${{ secrets.AZURE_WEBAPP_API }}
+  WEBAPP_WEB: ${{ secrets.AZURE_WEBAPP_WEB }}
+  BACKEND_IMAGE: avto-backend
+  FRONTEND_IMAGE: avto-frontend
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: |
+          az acr login -n "$ACR_NAME"
+
+      - name: Set build vars
+        id: vars
+        run: |
+          echo "TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          echo "REGISTRY=${ACR_NAME}.azurecr.io" >> $GITHUB_OUTPUT
+
+      - name: Build+push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend_py
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ steps.vars.outputs.TAG }}
+            ${{ steps.vars.outputs.REGISTRY }}/${{ env.BACKEND_IMAGE }}:latest
+
+      - name: Build+push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ steps.vars.outputs.TAG }}
+            ${{ steps.vars.outputs.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:latest
+          build-args: |
+            NGINX_CONF=nginx.prod.conf
+            VITE_API_URL=${{ secrets.BACKEND_URL }}
+
+      - name: Update WebApp (API)
+        if: ${{ env.WEBAPP_API != '' }}
+        run: |
+          az webapp config container set \
+            -g "$RESOURCE_GROUP" -n "$WEBAPP_API" \
+            --docker-custom-image-name "${{ steps.vars.outputs.REGISTRY }}/${BACKEND_IMAGE}:${{ steps.vars.outputs.TAG }}" \
+            --docker-registry-server-url "https://${{ steps.vars.outputs.REGISTRY }}"
+          az webapp restart -g "$RESOURCE_GROUP" -n "$WEBAPP_API"
+
+      - name: Update WebApp (WEB)
+        if: ${{ env.WEBAPP_WEB != '' }}
+        run: |
+          az webapp config container set \
+            -g "$RESOURCE_GROUP" -n "$WEBAPP_WEB" \
+            --docker-custom-image-name "${{ steps.vars.outputs.REGISTRY }}/${FRONTEND_IMAGE}:${{ steps.vars.outputs.TAG }}" \
+            --docker-registry-server-url "https://${{ steps.vars.outputs.REGISTRY }}"
+          az webapp restart -g "$RESOURCE_GROUP" -n "$WEBAPP_WEB"
+

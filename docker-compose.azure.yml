@@ -1,0 +1,39 @@
+version: "3.8"
+
+# Azure Web App for Containers (Linux)에서 사용할 예시 Compose 파일입니다.
+# - 이미지 태그와 ACR 이름만 실제 값으로 교체하세요.
+# - 포털의 배포 센터(다중 컨테이너) 또는 Azure CLI로 적용합니다.
+#   az webapp config container set --multicontainer-config-type compose --multicontainer-config-file docker-compose.azure.yml \
+#     -g <RESOURCE_GROUP> -n <WEBAPP_NAME>
+
+services:
+  backend:
+    image: <ACR_NAME>.azurecr.io/avto-backend:<TAG>
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      # 프런트의 실제 공개 주소(예: https://app-name.azurewebsites.net)
+      - FRONTEND_URL=${FRONTEND_URL}
+      # 필요 시 DB/키는 App Settings로 관리 권장
+      # - DB_HOST=
+      # - DB_PORT=5432
+      # - DB_NAME=
+      # - DB_USER=
+      # - DB_PASSWORD=
+      # - DB_SSLMODE=require
+    expose:
+      - "3001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    image: <ACR_NAME>.azurecr.io/avto-frontend:<TAG>
+    depends_on:
+      - backend
+    expose:
+      - "8080"
+

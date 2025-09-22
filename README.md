@@ -62,6 +62,14 @@ npm run dev  # 기본 포트 5173
 
 > `scripts/quickstart.ps1`를 실행하면 백엔드 가상환경 생성, 의존성 설치, CSV 인입, 서버 실행까지 자동화할 수 있습니다.
 
+## 배포(Azure App Service)
+- 단일 컨테이너 2앱(권장): 프런트(Nginx, 8080)와 백엔드(FastAPI, 3001)를 각각 별도 웹앱으로 배포합니다.
+- 프런트 이미지는 빌드시 백엔드 URL을 주입하세요: `--build-arg VITE_API_URL=https://<api-app>.azurewebsites.net`
+- 자동화: `.github/workflows/azure-acr-2apps.yml` 워크플로 사용(레지스트리/웹앱 정보는 저장소 시크릿으로 설정).
+- 멀티 컨테이너(옵션): `docker-compose.azure.yml` 템플릿을 배포 센터(다중 컨테이너) 또는 CLI로 적용.
+
+자세한 단계는 `docs/azure-deploy.md`를 참고하세요.
+
 ## 환경 변수
 `backend_py/.env.example`을 복사해 `backend_py/.env`를 만들고 필요한 키만 채워도 됩니다.
 

@@ -637,6 +637,178 @@ export const VirtualTryOnUI: React.FC = () => {
     }
   }, [outerLabel]);
 
+const addCatalogItemToSlot = useCallback(
+    async (item: RecommendationItem, showToast: boolean = true) => {
+      console.log("🔔🔔🔔 addCatalogItemToSlot 호출됨! 🔔🔔🔔");
+      console.log("🔔 상품 정보:", {
+        id: item.id,
+        title: item.title,
+        category: item.category,
+        imageUrl: item.imageUrl,
+      });
+
+      const cat = (item.category || "").toLowerCase();
+      console.log("🔔 카테고리 소문자 변환:", cat);
+
+      // 백엔드와 동일한 카테고리 매핑 로직 사용
+      const slot: "top" | "pants" | "shoes" | "outer" | null = (() => {
+        const match = (keywordList: string[]): boolean =>
+          keywordList.some((keyword) => cat.includes(keyword));
+
+        if (
+          match([
+            "outer",
+            "coat",
+            "jacket",
+            "outerwear",
+            "맨투맨",
+            "아우터",
+            "패딩",
+          ])
+        ) {
+          return "outer";
+        }
+        if (match(["top", "tee", "shirt", "sweater", "상의", "블라우스"])) {
+          return "top";
+        }
+        if (
+          match([
+            "pants",
+            "bottom",
+            "skirt",
+            "trouser",
+            "하의",
+            "데님",
+            "슬랙스",
+          ])
+        ) {
+          return "pants";
+        }
+        if (match(["shoe", "sneaker", "boots", "신발", "스니커즈"])) {
+          return "shoes";
+        }
+        return null;
+      })();
+
+      console.log("🔔 매핑된 slot:", slot);
+
+      if (!slot) {
+        console.error("❌ 카테고리 매핑 실패:", item.category);
+        return;
+      }
+      if (!item.imageUrl) {
+        addToast(toast.error("Image URL is missing."));
+        return;
+      }
+      try {
+        console.log("🔔 이미지 변환 시작...");
+        const up = await imageProxy.toUploadedImage(item.imageUrl, item.title);
+        console.log("🔔 이미지 변환 완료:", up);
+
+        // 원본 상품 메타데이터 저장
+        setOriginalItems((prev) => ({
+          ...prev,
+          [slot]: item,
+        }));
+
+        console.log("🔔 recordInput 호출 전:", { slot, item });
+
+        if (slot === "top") {
+          setTopImage(up);
+          setTopLabel(item.title);
+          setSelectedTopId(String(item.id));
+          recordInput(
+            { top: up },
+            { top: item.title },
+            "delta",
+            undefined,
+            { top: String(item.id) },
+            { top: item }
+          );
+        }
+        if (slot === "pants") {
+          setPantsImage(up);
+          setPantsLabel(item.title);
+          setSelectedPantsId(String(item.id));
+          recordInput(
+            { pants: up },
+            { pants: item.title },
+            "delta",
+            undefined,
+            { pants: String(item.id) },
+            { pants: item }
+          );
+        }
+        if (slot === "shoes") {
+          setShoesImage(up);
+          setShoesLabel(item.title);
+          setSelectedShoesId(String(item.id));
+          recordInput(
+            { shoes: up },
+            { shoes: item.title },
+            "delta",
+            undefined,
+            { shoes: String(item.id) },
+            { shoes: item }
+          );
+        }
+        if (slot === "outer") {
+          setOuterImage(up);
+          setOuterLabel(item.title);
+          setSelectedOuterId(String(item.id));
+          recordInput(
+            { outer: up },
+            { outer: item.title },
+            "delta",
+            undefined,
+            { outer: String(item.id) },
+            { outer: item }
+          );
+        }
+
+        console.log("🔔 recordInput 호출 완료");
+        if (showToast) {
+          addToast(
+            toast.success(
+              `Added: ${item.title}. Use Try It On to apply.`,
+              undefined,
+              { duration: 1800 }
+            )
+          );
+        }
+      } catch (e: any) {
+        console.error("❌ 이미지 처리 실패:", e);
+        addToast(toast.error("Failed to add item", e?.message));
+      }
+    },
+    [
+      addToast,
+      setTopImage,
+      setPantsImage,
+      setShoesImage,
+      setOuterImage,
+      setTopLabel,
+      setPantsLabel,
+      setShoesLabel,
+      setOuterLabel,
+      setSelectedOuterId,
+      setOriginalItems,
+    ]
+  );
+  // Helper wrapper: force slot without relying on category text
+
+const addToSlotForced = useCallback(
+    (item: RecommendationItem, slot: "top" | "pants" | "shoes" | "outer") => {
+      console.log("🔔 추천 목록에서 슬롯에 추가:", {
+        title: item.title,
+        slot,
+      });
+      return addCatalogItemToSlot({ ...(item as any), category: slot } as any);
+    },
+    [addCatalogItemToSlot]
+  );
+
+
   // 카탈로그 카드에서 전달된 상품을 자동으로 슬롯에 배치
   const hasProcessedRef = useRef(false);
 
@@ -755,7 +927,6 @@ export const VirtualTryOnUI: React.FC = () => {
   const [maxPrice, setMaxPrice] = useState<string>("");
   const [excludeTagsInput, setExcludeTagsInput] = useState<string>("");
 
-  // Random items to show before recommendations are available
   type GenderFilter = "all" | "male" | "female";
   const [vtGender, setVtGender] = useState<GenderFilter>("all");
   const [randomItemsByCat, setRandomItemsByCat] = useState<{
@@ -765,11 +936,12 @@ export const VirtualTryOnUI: React.FC = () => {
     outer: RecommendationItem[];
   }>({ top: [], pants: [], shoes: [], outer: [] });
   const [isLoadingRandom, setIsLoadingRandom] = useState<boolean>(false);
+
   const fetchRandom = useCallback(
     async (limit: number = 12) => {
       try {
         setIsLoadingRandom(true);
-        const per = Math.max(1, Math.floor(limit / 4)); // 4개 카테고리에 균등 분배
+        const per = Math.max(1, Math.floor(limit / 4));
         const gparam =
           vtGender && vtGender !== "all" ? `&gender=${vtGender}` : "";
         const [tops, pants, shoes, outers] = await Promise.all([
@@ -795,8 +967,8 @@ export const VirtualTryOnUI: React.FC = () => {
             .catch(() => [] as RecommendationItem[]),
         ]);
         setRandomItemsByCat({ top: tops, pants, shoes, outer: outers });
-      } catch (e) {
-        // ignore silently
+      } catch (error) {
+        console.warn("랜덤 아이템 로드 실패", error);
         setRandomItemsByCat({ top: [], pants: [], shoes: [], outer: [] });
       } finally {
         setIsLoadingRandom(false);
@@ -804,10 +976,129 @@ export const VirtualTryOnUI: React.FC = () => {
     },
     [vtGender]
   );
+
   useEffect(() => {
-    // Fetch once on mount; keep until proper recommendations arrive
     fetchRandom(12);
   }, [fetchRandom]);
+
+    const renderRandomRecommendations = useCallback(() => {
+    const genderOptions: { key: GenderFilter; label: string }[] = [
+      { key: "all", label: "전체" },
+      { key: "male", label: "남성" },
+      { key: "female", label: "여성" },
+    ];
+
+    const sections: {
+      key: "top" | "pants" | "outer" | "shoes";
+      label: string;
+      selectedId: string | null;
+    }[] = [
+      { key: "top", label: "상의", selectedId: selectedTopId },
+      { key: "pants", label: "하의", selectedId: selectedPantsId },
+      { key: "outer", label: "아우터", selectedId: selectedOuterId },
+      { key: "shoes", label: "신발", selectedId: selectedShoesId },
+    ];
+
+    const totalCount =
+      randomItemsByCat.top.length +
+      randomItemsByCat.pants.length +
+      randomItemsByCat.outer.length +
+      randomItemsByCat.shoes.length;
+
+    return (
+      <Card>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+          <h2 className="text-2xl font-bold text-gray-800">랜덤 아이템</h2>
+          <div className="flex items-center gap-2">
+            <div className="hidden sm:flex gap-1">
+              {genderOptions.map(({ key, label }) => {
+                const active = vtGender === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setVtGender(key)}
+                    className={[
+                      "px-3 py-1.5 rounded-full text-sm border transition-all duration-150",
+                      active
+                        ? "bg-black text-white border-black"
+                        : "border-gray-300 text-gray-700 hover:bg-gray-100",
+                    ].join(" ")}
+                    aria-pressed={active}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <Button size="sm" onClick={() => fetchRandom(12)} loading={isLoadingRandom}>
+              새로고침
+            </Button>
+          </div>
+        </div>
+        <div className="space-y-6">
+          {sections.map(({ key, label, selectedId }) => {
+            const items = randomItemsByCat[key];
+            if (!items.length) return null;
+            return (
+              <div key={key}>
+                <h3 className="text-lg font-semibold text-gray-800 mb-2">
+                  {label}
+                </h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {items.map((item) => (
+                    <Card
+                      key={item.id}
+                      className="cursor-pointer hover:shadow-lg transition-shadow"
+                      onClick={() => addToSlotForced(item, key)}
+                      padding="sm"
+                    >
+                      <div
+                        className={`aspect-[4/5] rounded-lg overflow-hidden bg-gray-100 mb-2 ${
+                          selectedId === String(item.id)
+                            ? "ring-2 ring-blue-500"
+                            : ""
+                        }`}
+                      >
+                        {item.imageUrl && (
+                          <img
+                            src={item.imageUrl}
+                            alt={item.title}
+                            className="w-full h-full object-cover"
+                          />
+                        )}
+                      </div>
+                      <p
+                        className="text-xs text-gray-700 truncate"
+                        title={item.title}
+                      >
+                        {item.title}
+                      </p>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {!totalCount && (
+          <div className="text-center text-gray-500 py-6">
+            아이템을 불러올 수 없거나 결과가 없습니다.
+          </div>
+        )}
+      </Card>
+    );
+  }, [
+    addToSlotForced,
+    fetchRandom,
+    isLoadingRandom,
+    randomItemsByCat,
+    selectedOuterId,
+    selectedPantsId,
+    selectedShoesId,
+    selectedTopId,
+    vtGender,
+  ]);
 
   const convertToApiFile = (uploadedImage: UploadedImage): ApiFile => ({
     base64: uploadedImage.base64,
@@ -1093,176 +1384,7 @@ export const VirtualTryOnUI: React.FC = () => {
     (!personImage && !!(topImage && pantsImage && shoesImage));
 
   // Helper: add a catalog/recommendation item into proper slot
-  const addCatalogItemToSlot = useCallback(
-    async (item: RecommendationItem, showToast: boolean = true) => {
-      console.log("🔔🔔🔔 addCatalogItemToSlot 호출됨! 🔔🔔🔔");
-      console.log("🔔 상품 정보:", {
-        id: item.id,
-        title: item.title,
-        category: item.category,
-        imageUrl: item.imageUrl,
-      });
-
-      const cat = (item.category || "").toLowerCase();
-      console.log("🔔 카테고리 소문자 변환:", cat);
-
-      // 백엔드와 동일한 카테고리 매핑 로직 사용
-      const slot: "top" | "pants" | "shoes" | "outer" | null = (() => {
-        const match = (keywordList: string[]): boolean =>
-          keywordList.some((keyword) => cat.includes(keyword));
-
-        if (
-          match([
-            "outer",
-            "coat",
-            "jacket",
-            "outerwear",
-            "맨투맨",
-            "아우터",
-            "패딩",
-          ])
-        ) {
-          return "outer";
-        }
-        if (match(["top", "tee", "shirt", "sweater", "상의", "블라우스"])) {
-          return "top";
-        }
-        if (
-          match([
-            "pants",
-            "bottom",
-            "skirt",
-            "trouser",
-            "하의",
-            "데님",
-            "슬랙스",
-          ])
-        ) {
-          return "pants";
-        }
-        if (match(["shoe", "sneaker", "boots", "신발", "스니커즈"])) {
-          return "shoes";
-        }
-        return null;
-      })();
-
-      console.log("🔔 매핑된 slot:", slot);
-
-      if (!slot) {
-        console.error("❌ 카테고리 매핑 실패:", item.category);
-        return;
-      }
-      if (!item.imageUrl) {
-        addToast(toast.error("Image URL is missing."));
-        return;
-      }
-      try {
-        console.log("🔔 이미지 변환 시작...");
-        const up = await imageProxy.toUploadedImage(item.imageUrl, item.title);
-        console.log("🔔 이미지 변환 완료:", up);
-
-        // 원본 상품 메타데이터 저장
-        setOriginalItems((prev) => ({
-          ...prev,
-          [slot]: item,
-        }));
-
-        console.log("🔔 recordInput 호출 전:", { slot, item });
-
-        if (slot === "top") {
-          setTopImage(up);
-          setTopLabel(item.title);
-          setSelectedTopId(String(item.id));
-          recordInput(
-            { top: up },
-            { top: item.title },
-            "delta",
-            undefined,
-            { top: String(item.id) },
-            { top: item }
-          );
-        }
-        if (slot === "pants") {
-          setPantsImage(up);
-          setPantsLabel(item.title);
-          setSelectedPantsId(String(item.id));
-          recordInput(
-            { pants: up },
-            { pants: item.title },
-            "delta",
-            undefined,
-            { pants: String(item.id) },
-            { pants: item }
-          );
-        }
-        if (slot === "shoes") {
-          setShoesImage(up);
-          setShoesLabel(item.title);
-          setSelectedShoesId(String(item.id));
-          recordInput(
-            { shoes: up },
-            { shoes: item.title },
-            "delta",
-            undefined,
-            { shoes: String(item.id) },
-            { shoes: item }
-          );
-        }
-        if (slot === "outer") {
-          setOuterImage(up);
-          setOuterLabel(item.title);
-          setSelectedOuterId(String(item.id));
-          recordInput(
-            { outer: up },
-            { outer: item.title },
-            "delta",
-            undefined,
-            { outer: String(item.id) },
-            { outer: item }
-          );
-        }
-
-        console.log("🔔 recordInput 호출 완료");
-        if (showToast) {
-          addToast(
-            toast.success(
-              `Added: ${item.title}. Use Try It On to apply.`,
-              undefined,
-              { duration: 1800 }
-            )
-          );
-        }
-      } catch (e: any) {
-        console.error("❌ 이미지 처리 실패:", e);
-        addToast(toast.error("Failed to add item", e?.message));
-      }
-    },
-    [
-      addToast,
-      setTopImage,
-      setPantsImage,
-      setShoesImage,
-      setOuterImage,
-      setTopLabel,
-      setPantsLabel,
-      setShoesLabel,
-      setOuterLabel,
-      setSelectedOuterId,
-      setOriginalItems,
-    ]
-  );
-  // Helper wrapper: force slot without relying on category text
-  const addToSlotForced = useCallback(
-    (item: RecommendationItem, slot: "top" | "pants" | "shoes" | "outer") => {
-      console.log("🔔🔔🔔 addToSlotForced 호출됨! 🔔🔔🔔");
-      console.log("🔔 랜덤 아이템 클릭:", { item: item.title, slot });
-      // Reuse existing logic by overriding category for mapping
-      return addCatalogItemToSlot({ ...(item as any), category: slot } as any);
-    },
-    [addCatalogItemToSlot]
-  );
-
-  // 의류 이미지와 좋아요 토글 처리
+    // 의류 이미지와 좋아요 토글 처리
   const handleClothingLike = useCallback(
     (slot: "outer" | "top" | "pants" | "shoes") => {
       const label =
@@ -2062,415 +2184,32 @@ export const VirtualTryOnUI: React.FC = () => {
               )}
 
               {/* Recommendations Section */}
-              {(recommendations || isLoadingRecommendations) && (
-                <div className="mt-8">
-                  {isLoadingRecommendations ? (
-                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
-                      <div className="flex items-center justify-center">
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                        <span className="ml-3 text-gray-600">
-                          異붿쿇 ?곹뭹??遺덈윭?ㅻ뒗 以?..
-                        </span>
-                      </div>
+              <div className="mt-8">
+                {isLoadingRecommendations ? (
+                  <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+                    <div className="flex items-center justify-center">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                      <span className="ml-3 text-gray-600">
+                        추천 상품을 불러오는 중입니다…
+                      </span>
                     </div>
-                  ) : recommendations ? (
-                    <RecommendationDisplay
-                      recommendations={recommendations}
-                      onItemClick={addCatalogItemToSlot}
-                    />
-                  ) : null}
-                </div>
-              )}
+                  </div>
+                ) : recommendations ? (
+                  <RecommendationDisplay
+                    recommendations={recommendations}
+                    onItemClick={addCatalogItemToSlot}
+                  />
+                ) : (
+                  renderRandomRecommendations()
+                )}
+              </div>
               {/* LLM 평가: 히스토리 선택 최소 수 */}
               {/* HistoryEvaluator removed per request */}
-              {/* Fallback random items before recommendations are available (hidden here; moved to bottom full-width) */}
-              {!recommendations && !isLoadingRecommendations && (
-                <div className="mt-8 hidden">
-                  <Card>
-                    <div className="flex items-center justify-between mb-4">
-                      <h2 className="text-2xl font-bold text-gray-800">
-                        랜덤 아이템
-                      </h2>
-                      <Button
-                        size="sm"
-                        onClick={() => fetchRandom(12)}
-                        loading={isLoadingRandom}
-                      >
-                        새로고침
-                      </Button>
-                    </div>
-                    <div className="space-y-6">
-                      <div>
-                        <h3 className="text-lg font-semibold text-gray-800 mb-2">
-                          상의
-                        </h3>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                          {randomItemsByCat.top.map((item) => (
-                            <Card
-                              key={item.id}
-                              className="cursor-pointer hover:shadow-lg transition-shadow"
-                              onClick={() => addToSlotForced(item, "top")}
-                              padding="sm"
-                            >
-                              <div
-                                className={`aspect-[4/5] rounded-lg overflow-hidden bg-gray-100 mb-2 ${
-                                  selectedTopId === String(item.id)
-                                    ? "ring-2 ring-blue-500"
-                                    : ""
-                                }`}
-                              >
-                                {item.imageUrl && (
-                                  <img
-                                    src={item.imageUrl}
-                                    alt={item.title}
-                                    className="w-full h-full object-cover"
-                                  />
-                                )}
-                              </div>
-                              <p
-                                className="text-xs text-gray-700 truncate"
-                                title={item.title}
-                              >
-                                {item.title}
-                              </p>
-                            </Card>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-semibold text-gray-800 mb-2">
-                          하의
-                        </h3>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                          {randomItemsByCat.pants.map((item) => (
-                            <Card
-                              key={item.id}
-                              className="cursor-pointer hover:shadow-lg transition-shadow"
-                              onClick={() => addToSlotForced(item, "pants")}
-                              padding="sm"
-                            >
-                              <div
-                                className={`aspect-[4/5] rounded-lg overflow-hidden bg-gray-100 mb-2 ${
-                                  selectedPantsId === String(item.id)
-                                    ? "ring-2 ring-blue-500"
-                                    : ""
-                                }`}
-                              >
-                                {item.imageUrl && (
-                                  <img
-                                    src={item.imageUrl}
-                                    alt={item.title}
-                                    className="w-full h-full object-cover"
-                                  />
-                                )}
-                              </div>
-                              <p
-                                className="text-xs text-gray-700 truncate"
-                                title={item.title}
-                              >
-                                {item.title}
-                              </p>
-                            </Card>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-semibold text-gray-800 mb-2">
-                          아우터
-                        </h3>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                          {randomItemsByCat.outer.map((item) => (
-                            <Card
-                              key={item.id}
-                              className="cursor-pointer hover:shadow-lg transition-shadow"
-                              onClick={() => addToSlotForced(item, "outer")}
-                              padding="sm"
-                            >
-                              <div
-                                className={`aspect-[4/5] rounded-lg overflow-hidden bg-gray-100 mb-2 ${
-                                  selectedOuterId === String(item.id)
-                                    ? "ring-2 ring-blue-500"
-                                    : ""
-                                }`}
-                              >
-                                {item.imageUrl && (
-                                  <img
-                                    src={item.imageUrl}
-                                    alt={item.title}
-                                    className="w-full h-full object-cover"
-                                  />
-                                )}
-                              </div>
-                              <p
-                                className="text-xs text-gray-700 truncate"
-                                title={item.title}
-                              >
-                                {item.title}
-                              </p>
-                            </Card>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-semibold text-gray-800 mb-2">
-                          신발
-                        </h3>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                          {randomItemsByCat.shoes.map((item) => (
-                            <Card
-                              key={item.id}
-                              className="cursor-pointer hover:shadow-lg transition-shadow"
-                              onClick={() => addToSlotForced(item, "shoes")}
-                              padding="sm"
-                            >
-                              <div
-                                className={`aspect-[4/5] rounded-lg overflow-hidden bg-gray-100 mb-2 ${
-                                  selectedShoesId === String(item.id)
-                                    ? "ring-2 ring-blue-500"
-                                    : ""
-                                }`}
-                              >
-                                {item.imageUrl && (
-                                  <img
-                                    src={item.imageUrl}
-                                    alt={item.title}
-                                    className="w-full h-full object-cover"
-                                  />
-                                )}
-                              </div>
-                              <p
-                                className="text-xs text-gray-700 truncate"
-                                title={item.title}
-                              >
-                                {item.title}
-                              </p>
-                            </Card>
-                          ))}
-                        </div>
-                      </div>
-                      {randomItemsByCat.top.length +
-                        randomItemsByCat.pants.length +
-                        randomItemsByCat.shoes.length ===
-                        0 && (
-                        <div className="text-center text-gray-500 py-6">
-                          아이템을 불러올 수 없거나 결과가 없습니다.
-                        </div>
-                      )}
-                    </div>
-                  </Card>
-                </div>
-              )}
+              
               {/* close result panel */}
             </div>
             {/* close grid container */}
           </div>
-          {/* 좌측 세로 젠더 필터 버튼 (사이버 피팅 화면에도 적용) */}
-          <div className="hidden md:flex fixed left-4 top-1/2 -translate-y-1/2 z-30">
-            <div className="flex flex-col gap-2 rounded-full border border-[var(--divider)] bg-white/90 p-1 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-white/70">
-              {(
-                [
-                  { key: "all", label: "전체" },
-                  { key: "male", label: "남성" },
-                  { key: "female", label: "여성" },
-                ] as { key: "all" | "male" | "female"; label: string }[]
-              ).map(({ key, label }) => {
-                const active = vtGender === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() => setVtGender(key)}
-                    className={[
-                      "px-4 py-2 rounded-full text-sm font-medium transition-all duration-150 text-left",
-                      active
-                        ? "bg-black text-white shadow-sm"
-                        : "text-[var(--text-strong)] hover:bg-gray-100",
-                    ].join(" ")}
-                    title={`${label} 상품만 보기`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Bottom full-width Random Items section */}
-          <section className="mt-10">
-            <Card>
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-2xl font-bold text-gray-800">
-                  랜덤 아이템
-                </h2>
-                <Button
-                  size="sm"
-                  onClick={() => fetchRandom(12)}
-                  loading={isLoadingRandom}
-                >
-                  새로고침
-                </Button>
-              </div>
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-800 mb-2">
-                    상의
-                  </h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                    {randomItemsByCat.top.map((item) => (
-                      <Card
-                        key={item.id}
-                        className="cursor-pointer hover:shadow-lg transition-shadow"
-                        onClick={() => addToSlotForced(item, "top")}
-                        padding="sm"
-                      >
-                        <div
-                          className={`aspect-[4/5] rounded-lg overflow-hidden bg-gray-100 mb-2 ${
-                            selectedTopId === String(item.id)
-                              ? "ring-2 ring-blue-500"
-                              : ""
-                          }`}
-                        >
-                          {item.imageUrl && (
-                            <img
-                              src={item.imageUrl}
-                              alt={item.title}
-                              className="w-full h-full object-cover"
-                            />
-                          )}
-                        </div>
-                        <p
-                          className="text-xs text-gray-700 truncate"
-                          title={item.title}
-                        >
-                          {item.title}
-                        </p>
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-800 mb-2">
-                    하의
-                  </h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                    {randomItemsByCat.pants.map((item) => (
-                      <Card
-                        key={item.id}
-                        className="cursor-pointer hover:shadow-lg transition-shadow"
-                        onClick={() => addToSlotForced(item, "pants")}
-                        padding="sm"
-                      >
-                        <div
-                          className={`aspect-[4/5] rounded-lg overflow-hidden bg-gray-100 mb-2 ${
-                            selectedPantsId === String(item.id)
-                              ? "ring-2 ring-blue-500"
-                              : ""
-                          }`}
-                        >
-                          {item.imageUrl && (
-                            <img
-                              src={item.imageUrl}
-                              alt={item.title}
-                              className="w-full h-full object-cover"
-                            />
-                          )}
-                        </div>
-                        <p
-                          className="text-xs text-gray-700 truncate"
-                          title={item.title}
-                        >
-                          {item.title}
-                        </p>
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-800 mb-2">
-                    아우터
-                  </h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                    {randomItemsByCat.outer.map((item) => (
-                      <Card
-                        key={item.id}
-                        className="cursor-pointer hover:shadow-lg transition-shadow"
-                        onClick={() => addToSlotForced(item, "outer")}
-                        padding="sm"
-                      >
-                        <div
-                          className={`aspect-[4/5] rounded-lg overflow-hidden bg-gray-100 mb-2 ${
-                            selectedOuterId === String(item.id)
-                              ? "ring-2 ring-blue-500"
-                              : ""
-                          }`}
-                        >
-                          {item.imageUrl && (
-                            <img
-                              src={item.imageUrl}
-                              alt={item.title}
-                              className="w-full h-full object-cover"
-                            />
-                          )}
-                        </div>
-                        <p
-                          className="text-xs text-gray-700 truncate"
-                          title={item.title}
-                        >
-                          {item.title}
-                        </p>
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-800 mb-2">
-                    신발
-                  </h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                    {randomItemsByCat.shoes.map((item) => (
-                      <Card
-                        key={item.id}
-                        className="cursor-pointer hover:shadow-lg transition-shadow"
-                        onClick={() => addToSlotForced(item, "shoes")}
-                        padding="sm"
-                      >
-                        <div
-                          className={`aspect-[4/5] rounded-lg overflow-hidden bg-gray-100 mb-2 ${
-                            selectedShoesId === String(item.id)
-                              ? "ring-2 ring-blue-500"
-                              : ""
-                          }`}
-                        >
-                          {item.imageUrl && (
-                            <img
-                              src={item.imageUrl}
-                              alt={item.title}
-                              className="w-full h-full object-cover"
-                            />
-                          )}
-                        </div>
-                        <p
-                          className="text-xs text-gray-700 truncate"
-                          title={item.title}
-                        >
-                          {item.title}
-                        </p>
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-                {randomItemsByCat.top.length +
-                  randomItemsByCat.pants.length +
-                  randomItemsByCat.shoes.length ===
-                  0 && (
-                  <div className="text-center text-gray-500 py-6">
-                    아이템을 불러올 수 없거나 결과가 없습니다.
-                  </div>
-                )}
-              </div>
-            </Card>
-          </section>
         </main>
       </div>
     </div>
