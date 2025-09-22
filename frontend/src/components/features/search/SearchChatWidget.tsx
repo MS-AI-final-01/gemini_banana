@@ -15,6 +15,20 @@ const panelStyle: React.CSSProperties = {
   zIndex: 50,
 };
 
+const hintStyle: React.CSSProperties = {
+  position: 'absolute',
+  right: 46,
+  bottom: 70,
+  background: '#fff',
+  color: '#111',
+  padding: '6px 12px',
+  borderRadius: 999,
+  fontSize: 12,
+  lineHeight: 1.4,
+  whiteSpace: 'nowrap',
+  boxShadow: '0 6px 16px rgba(0,0,0,0.15)'
+};
+
 const cardStyle: React.CSSProperties = {
   width: 'min(520px, 92vw)',
   height: 'min(82vh, 960px)',
@@ -119,23 +133,28 @@ export const SearchChatWidget: React.FC<Props> = ({ onApplyResults }) => {
   return (
     <div style={panelStyle}>
       {!open && (
-        <button
-          type="button"
-          aria-label="검색 챗 열기"
-          onClick={() => setOpen(true)}
-          style={{
-            width: 56,
-            height: 56,
-            borderRadius: 28,
-            background: '#111',
-            color: '#fff',
-            border: 'none',
-            boxShadow: '0 8px 20px rgba(0,0,0,0.22)',
-            cursor: 'pointer'
-          }}
-        >
-          💬
-        </button>
+        <>
+          <div style={hintStyle}>
+            찾고 싶은 상품을 채팅형식으로 찾아보세요
+          </div>
+          <button
+            type="button"
+            aria-label="검색 챗 열기"
+            onClick={() => setOpen(true)}
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: 28,
+              background: '#111',
+              color: '#fff',
+              border: 'none',
+              boxShadow: '0 8px 20px rgba(0,0,0,0.22)',
+              cursor: 'pointer'
+            }}
+          >
+            💬
+          </button>
+        </>
       )}
 
       {open && (
@@ -204,4 +223,3 @@ export const SearchChatWidget: React.FC<Props> = ({ onApplyResults }) => {
 };
 
 export default SearchChatWidget;
-

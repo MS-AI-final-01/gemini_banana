@@ -171,24 +171,26 @@ const ProductCard: React.FC<ProductCardProps> = ({ item, onBuy, onVirtualFitting
       onMouseLeave={() => setShowOverlay(false)}
       className="product-card"
     >
-      <div className="product-card__image">
-        {item.imageUrl && (
-          <img src={item.imageUrl} alt={item.title} />
-        )}
-        <ProductCardOverlay
-          isVisible={showOverlay}
-          onBuy={handleBuy}
-          onVirtualFitting={handleVirtual}
-        />
-        <button
-          onClick={onToggleLike}
-          aria-label="좋아요 토글"
-          className={`product-card__like ${liked ? 'is-liked' : ''}`}
-        >
-          <HeartIcon className="h-4 w-4" />
-        </button>
+      <div className="product-card__frame">
+        <div className="product-card__image">
+          {item.imageUrl && (
+            <img src={item.imageUrl} alt={item.title} />
+          )}
+          <ProductCardOverlay
+            isVisible={showOverlay}
+            onBuy={handleBuy}
+            onVirtualFitting={handleVirtual}
+          />
+          <button
+            onClick={onToggleLike}
+            aria-label="좋아요 토글"
+            className={`product-card__like ${liked ? 'is-liked' : ''}`}
+          >
+            <HeartIcon className="h-4 w-4" />
+          </button>
+        </div>
       </div>
-      <div className="product-card__meta">
+      <div className="product-card__details">
         <p className="product-card__brand">{item.brandName || item.tags?.[0] || 'MUSINSA'}</p>
         <p className="product-card__title">{displayTitle}</p>
         <div className="product-card__pricing">
