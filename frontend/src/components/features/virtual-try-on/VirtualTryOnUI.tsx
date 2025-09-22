@@ -1597,276 +1597,281 @@ const addToSlotForced = useCallback(
   );
 
   return (
-    <div className="flex flex-col items-center bg-[var(--page-bg)] pt-[88px] sm:pt-[96px] md:pt-[104px] px-4 sm:px-6 lg:px-8 pb-20">
-      <div className="w-full">
-        <main className="mx-auto w-full max-w-screen-xl xl:max-w-[1400px] 2xl:max-w-[1600px]">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 xl:gap-10 items-start">
+    <div className="flex flex-col items-center bg-[var(--page-bg)] pt-[88px] sm:pt-[96px] md:pt-[104px] pb-20">
+      <main className="w-full">
+        <div className="mx-auto w-full max-w-[960px] px-4 sm:px-6 md:px-8">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start">
             {/* Input Section */}
             <div className="lg:col-span-8 order-1 bg-white p-6 xl:p-7 rounded-2xl shadow-sm border border-gray-200">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* 왼쪽 영역: Person + AI 샘플 */}
-                <div className="md:col-span-1 space-y-2 border-r border-gray-200 pr-4">
-                  <ImageUploader
-                    id="person-image"
-                    title="Person"
-                    description="Upload a full-body photo."
-                    onImageUpload={(img) => {
-                      setPersonImage(img);
-                      setPersonSource(img ? "upload" : "unknown");
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-medium text-gray-700">
+                    카테고리 아이템
+                  </h3>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setPersonImage(null);
+                      setPersonSource("unknown");
+                      setOuterImage(null);
+                      setTopImage(null);
+                      setPantsImage(null);
+                      setShoesImage(null);
+                      setOuterLabel(undefined);
+                      setTopLabel(undefined);
+                      setPantsLabel(undefined);
+                      setShoesLabel(undefined);
                       setSelectedModelId(null);
-                      recordInput(
-                        { person: img },
-                        undefined,
-                        "delta",
-                        img ? "upload" : "unknown"
+                      setSelectedOuterId(null);
+                      setSelectedTopId(null);
+                      setSelectedPantsId(null);
+                      setSelectedShoesId(null);
+                      setOriginalItems({});
+                      addToast(
+                        toast.success("All slots cleared", undefined, {
+                          duration: 1500,
+                        })
                       );
                     }}
-                    externalImage={personImage}
-                    active={!!personImage && personSource === "upload"}
-                    isFullScreen={isFullScreen}
-                  />
-                  <ModelPicker
-                    direction="vertical"
-                    selectedId={
-                      personSource === "model"
-                        ? selectedModelId || undefined
-                        : undefined
+                    disabled={
+                      !personImage &&
+                      !outerImage &&
+                      !topImage &&
+                      !pantsImage &&
+                      !shoesImage
                     }
-                    onSelectModel={(id) => setSelectedModelId(id)}
-                    onPick={(img) => {
-                      setPersonImage(img);
-                      setPersonSource("model");
-                      recordInput({ person: img }, undefined, "delta", "model");
-                    }}
-                  />
+                  >
+                    전체 비우기
+                  </Button>
                 </div>
-
-                {/* 오른쪽 영역: 의류 4칸 */}
-                <div className="md:col-span-2 pl-4">
-                  <div className="flex justify-between items-center mb-2">
-                    <h3 className="text-sm font-medium text-gray-700">
-                      카테고리 아이템
-                    </h3>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        setOuterImage(null);
-                        setTopImage(null);
-                        setPantsImage(null);
-                        setShoesImage(null);
-                        setOuterLabel(undefined);
-                        setTopLabel(undefined);
-                        setPantsLabel(undefined);
-                        setShoesLabel(undefined);
-                        setSelectedOuterId(null);
-                        setSelectedTopId(null);
-                        setSelectedPantsId(null);
-                        setSelectedShoesId(null);
-                        setOriginalItems({});
-                        addToast(
-                          toast.success("All slots cleared", undefined, {
-                            duration: 1500,
-                          })
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+                  <div className="col-span-2 md:col-span-1">
+                    <ImageUploader
+                      id="person-image"
+                      title="Person"
+                      description="Upload a full-body photo."
+                      onImageUpload={(img) => {
+                        setPersonImage(img);
+                        setPersonSource(img ? "upload" : "unknown");
+                        setSelectedModelId(null);
+                        recordInput(
+                          { person: img },
+                          undefined,
+                          "delta",
+                          img ? "upload" : "unknown"
                         );
                       }}
-                      disabled={
-                        !outerImage && !topImage && !pantsImage && !shoesImage
-                      }
-                    >
-                      전체 비우기
-                    </Button>
+                      externalImage={personImage}
+                      active={!!personImage && personSource === "upload"}
+                      isFullScreen={isFullScreen}
+                    />
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div
-                      onMouseEnter={() => outerImage && setHoveredSlot("outer")}
-                      onMouseLeave={() => setHoveredSlot(null)}
-                    >
-                      <ImageUploader
-                        id="outer-image"
-                        title="Outer"
-                        description="Upload a photo of outerwear."
-                        onImageUpload={(img) => {
-                          setOuterImage(img);
-                          const label = img ? "Uploaded outer" : undefined;
-                          setOuterLabel(label);
-                          recordInput(
-                            { outer: img },
-                            { outer: label },
-                            "delta"
-                          );
-                        }}
-                        externalImage={outerImage}
-                        active={!!outerImage}
-                        isFullScreen={isFullScreen}
-                        overlay={
-                          <ClothingItemOverlay
-                            isVisible={hoveredSlot === "outer" && !isFullScreen}
-                            onLike={() => handleClothingLike("outer")}
-                            onBuy={() => handleClothingBuy("outer")}
-                            onRemove={() => {
-                              console.log("🔍 아우터 제거 시작");
-                              setOuterImage(null);
-                              setOuterLabel(undefined);
-                              setSelectedOuterId(null);
-                              setOriginalItems((prev) => ({
-                                ...prev,
-                                outer: undefined,
-                              }));
-                              // 생성된 이미지도 초기화하여 이전 결과가 남아있지 않도록 함
-                              setGeneratedImage(null);
-                              console.log("🔍 아우터 제거 완료");
-                            }}
-                            itemTitle={outerLabel || "Outer"}
-                            isLiked={
-                              selectedOuterId
-                                ? likesService.isLiked(selectedOuterId)
-                                : likesService.isLiked("uploaded-outer")
-                            }
-                          />
-                        }
-                      />
-                    </div>
-                    <div
-                      onMouseEnter={() => topImage && setHoveredSlot("top")}
-                      onMouseLeave={() => setHoveredSlot(null)}
-                    >
-                      <ImageUploader
-                        id="top-image"
-                        title="Top"
-                        description="Upload a photo of a top."
-                        onImageUpload={(img) => {
-                          setTopImage(img);
-                          const label = img ? "Uploaded top" : undefined;
-                          setTopLabel(label);
-                          recordInput({ top: img }, { top: label }, "delta");
-                        }}
-                        externalImage={topImage}
-                        active={!!topImage}
-                        isFullScreen={isFullScreen}
-                        overlay={
-                          <ClothingItemOverlay
-                            isVisible={hoveredSlot === "top" && !isFullScreen}
-                            onLike={() => handleClothingLike("top")}
-                            onBuy={() => handleClothingBuy("top")}
-                            onRemove={() => {
-                              console.log("🔍 상의 제거 시작");
-                              setTopImage(null);
-                              setTopLabel(undefined);
-                              setSelectedTopId(null);
-                              setOriginalItems((prev) => ({
-                                ...prev,
-                                top: undefined,
-                              }));
-                              setGeneratedImage(null);
-                              console.log("🔍 상의 제거 완료");
-                            }}
-                            itemTitle={topLabel || "Top"}
-                            isLiked={
-                              selectedTopId
-                                ? likesService.isLiked(selectedTopId)
-                                : likesService.isLiked("uploaded-top")
-                            }
-                          />
-                        }
-                      />
-                    </div>
-                    <div
-                      onMouseEnter={() => pantsImage && setHoveredSlot("pants")}
-                      onMouseLeave={() => setHoveredSlot(null)}
-                    >
-                      <ImageUploader
-                        id="pants-image"
-                        title="Pants"
-                        description="Upload a photo of pants."
-                        onImageUpload={(img) => {
-                          setPantsImage(img);
-                          const label = img ? "Uploaded pants" : undefined;
-                          setPantsLabel(label);
-                          recordInput(
-                            { pants: img },
-                            { pants: label },
-                            "delta"
-                          );
-                        }}
-                        externalImage={pantsImage}
-                        active={!!pantsImage}
-                        isFullScreen={isFullScreen}
-                        overlay={
-                          <ClothingItemOverlay
-                            isVisible={hoveredSlot === "pants" && !isFullScreen}
-                            onLike={() => handleClothingLike("pants")}
-                            onBuy={() => handleClothingBuy("pants")}
-                            onRemove={() => {
-                              console.log("🔍 하의 제거 시작");
-                              setPantsImage(null);
-                              setPantsLabel(undefined);
-                              setSelectedPantsId(null);
-                              setOriginalItems((prev) => ({
-                                ...prev,
-                                pants: undefined,
-                              }));
-                              setGeneratedImage(null);
-                              console.log("🔍 하의 제거 완료");
-                            }}
-                            itemTitle={pantsLabel || "Pants"}
-                            isLiked={
-                              selectedPantsId
-                                ? likesService.isLiked(selectedPantsId)
-                                : likesService.isLiked("uploaded-pants")
-                            }
-                          />
-                        }
-                      />
-                    </div>
-                    <div
-                      onMouseEnter={() => shoesImage && setHoveredSlot("shoes")}
-                      onMouseLeave={() => setHoveredSlot(null)}
-                    >
-                      <ImageUploader
-                        id="shoes-image"
-                        title="Shoes"
-                        description="Upload a photo of shoes."
-                        onImageUpload={(img) => {
-                          setShoesImage(img);
-                          const label = img ? "Uploaded shoes" : undefined;
-                          setShoesLabel(label);
-                          recordInput(
-                            { shoes: img },
-                            { shoes: label },
-                            "delta"
-                          );
-                        }}
-                        externalImage={shoesImage}
-                        active={!!shoesImage}
-                        isFullScreen={isFullScreen}
-                        overlay={
-                          <ClothingItemOverlay
-                            isVisible={hoveredSlot === "shoes" && !isFullScreen}
-                            onLike={() => handleClothingLike("shoes")}
-                            onBuy={() => handleClothingBuy("shoes")}
-                            onRemove={() => {
-                              console.log("🔍 신발 제거 시작");
-                              setShoesImage(null);
-                              setShoesLabel(undefined);
-                              setSelectedShoesId(null);
-                              setOriginalItems((prev) => ({
-                                ...prev,
-                                shoes: undefined,
-                              }));
-                              setGeneratedImage(null);
-                              console.log("🔍 신발 제거 완료");
-                            }}
-                            itemTitle={shoesLabel || "Shoes"}
-                            isLiked={
-                              selectedShoesId
-                                ? likesService.isLiked(selectedShoesId)
-                                : likesService.isLiked("uploaded-shoes")
-                            }
-                          />
-                        }
-                      />
-                    </div>
+                  <div
+                    onMouseEnter={() => outerImage && setHoveredSlot("outer")}
+                    onMouseLeave={() => setHoveredSlot(null)}
+                  >
+                    <ImageUploader
+                      id="outer-image"
+                      title="Outer"
+                      description="Upload a photo of outerwear."
+                      onImageUpload={(img) => {
+                        setOuterImage(img);
+                        const label = img ? "Uploaded outer" : undefined;
+                        setOuterLabel(label);
+                        recordInput(
+                          { outer: img },
+                          { outer: label },
+                          "delta"
+                        );
+                      }}
+                      externalImage={outerImage}
+                      active={!!outerImage}
+                      isFullScreen={isFullScreen}
+                      overlay={
+                        <ClothingItemOverlay
+                          isVisible={hoveredSlot === "outer" && !isFullScreen}
+                          onLike={() => handleClothingLike("outer")}
+                          onBuy={() => handleClothingBuy("outer")}
+                          onRemove={() => {
+                            console.log("🔍 아우터 제거 시작");
+                            setOuterImage(null);
+                            setOuterLabel(undefined);
+                            setSelectedOuterId(null);
+                            setOriginalItems((prev) => ({
+                              ...prev,
+                              outer: undefined,
+                            }));
+                            // 생성된 이미지도 초기화하여 이전 결과가 남아있지 않도록 함
+                            setGeneratedImage(null);
+                            console.log("🔍 아우터 제거 완료");
+                          }}
+                          itemTitle={outerLabel || "Outer"}
+                          isLiked={
+                            selectedOuterId
+                              ? likesService.isLiked(selectedOuterId)
+                              : likesService.isLiked("uploaded-outer")
+                          }
+                        />
+                      }
+                    />
+                  </div>
+                  <div
+                    onMouseEnter={() => topImage && setHoveredSlot("top")}
+                    onMouseLeave={() => setHoveredSlot(null)}
+                  >
+                    <ImageUploader
+                      id="top-image"
+                      title="Top"
+                      description="Upload a photo of a top."
+                      onImageUpload={(img) => {
+                        setTopImage(img);
+                        const label = img ? "Uploaded top" : undefined;
+                        setTopLabel(label);
+                        recordInput({ top: img }, { top: label }, "delta");
+                      }}
+                      externalImage={topImage}
+                      active={!!topImage}
+                      isFullScreen={isFullScreen}
+                      overlay={
+                        <ClothingItemOverlay
+                          isVisible={hoveredSlot === "top" && !isFullScreen}
+                          onLike={() => handleClothingLike("top")}
+                          onBuy={() => handleClothingBuy("top")}
+                          onRemove={() => {
+                            console.log("🔍 상의 제거 시작");
+                            setTopImage(null);
+                            setTopLabel(undefined);
+                            setSelectedTopId(null);
+                            setOriginalItems((prev) => ({
+                              ...prev,
+                              top: undefined,
+                            }));
+                            setGeneratedImage(null);
+                            console.log("🔍 상의 제거 완료");
+                          }}
+                          itemTitle={topLabel || "Top"}
+                          isLiked={
+                            selectedTopId
+                              ? likesService.isLiked(selectedTopId)
+                              : likesService.isLiked("uploaded-top")
+                          }
+                        />
+                      }
+                    />
+                  </div>
+                  <div
+                    onMouseEnter={() => pantsImage && setHoveredSlot("pants")}
+                    onMouseLeave={() => setHoveredSlot(null)}
+                  >
+                    <ImageUploader
+                      id="pants-image"
+                      title="Pants"
+                      description="Upload a photo of pants."
+                      onImageUpload={(img) => {
+                        setPantsImage(img);
+                        const label = img ? "Uploaded pants" : undefined;
+                        setPantsLabel(label);
+                        recordInput(
+                          { pants: img },
+                          { pants: label },
+                          "delta"
+                        );
+                      }}
+                      externalImage={pantsImage}
+                      active={!!pantsImage}
+                      isFullScreen={isFullScreen}
+                      overlay={
+                        <ClothingItemOverlay
+                          isVisible={hoveredSlot === "pants" && !isFullScreen}
+                          onLike={() => handleClothingLike("pants")}
+                          onBuy={() => handleClothingBuy("pants")}
+                          onRemove={() => {
+                            console.log("🔍 하의 제거 시작");
+                            setPantsImage(null);
+                            setPantsLabel(undefined);
+                            setSelectedPantsId(null);
+                            setOriginalItems((prev) => ({
+                              ...prev,
+                              pants: undefined,
+                            }));
+                            setGeneratedImage(null);
+                            console.log("🔍 하의 제거 완료");
+                          }}
+                          itemTitle={pantsLabel || "Pants"}
+                          isLiked={
+                            selectedPantsId
+                              ? likesService.isLiked(selectedPantsId)
+                              : likesService.isLiked("uploaded-pants")
+                          }
+                        />
+                      }
+                    />
+                  </div>
+                  <div
+                    onMouseEnter={() => shoesImage && setHoveredSlot("shoes")}
+                    onMouseLeave={() => setHoveredSlot(null)}
+                  >
+                    <ImageUploader
+                      id="shoes-image"
+                      title="Shoes"
+                      description="Upload a photo of shoes."
+                      onImageUpload={(img) => {
+                        setShoesImage(img);
+                        const label = img ? "Uploaded shoes" : undefined;
+                        setShoesLabel(label);
+                        recordInput(
+                          { shoes: img },
+                          { shoes: label },
+                          "delta"
+                        );
+                      }}
+                      externalImage={shoesImage}
+                      active={!!shoesImage}
+                      isFullScreen={isFullScreen}
+                      overlay={
+                        <ClothingItemOverlay
+                          isVisible={hoveredSlot === "shoes" && !isFullScreen}
+                          onLike={() => handleClothingLike("shoes")}
+                          onBuy={() => handleClothingBuy("shoes")}
+                          onRemove={() => {
+                            console.log("🔍 신발 제거 시작");
+                            setShoesImage(null);
+                            setShoesLabel(undefined);
+                            setSelectedShoesId(null);
+                            setOriginalItems((prev) => ({
+                              ...prev,
+                              shoes: undefined,
+                            }));
+                            setGeneratedImage(null);
+                            console.log("🔍 신발 제거 완료");
+                          }}
+                          itemTitle={shoesLabel || "Shoes"}
+                          isLiked={
+                            selectedShoesId
+                              ? likesService.isLiked(selectedShoesId)
+                              : likesService.isLiked("uploaded-shoes")
+                          }
+                        />
+                      }
+                    />
+                  </div>
+                  <div className="col-span-2 md:col-span-3 lg:col-span-5">
+                    <ModelPicker
+                      variant="inline"
+                      direction="horizontal"
+                      selectedId={
+                        personSource === "model"
+                          ? selectedModelId || undefined
+                          : undefined
+                      }
+                      onSelectModel={(id) => setSelectedModelId(id)}
+                      onPick={(img) => {
+                        setPersonImage(img);
+                        setPersonSource("model");
+                        recordInput({ person: img }, undefined, "delta", "model");
+                      }}
+                    />
                   </div>
                 </div>
               </div>
@@ -1925,7 +1930,7 @@ const addToSlotForced = useCallback(
               />
             </div>
 
-            <div className="lg:col-span-12 order-4">
+            <div className="order-4 lg:col-span-8">
               {!recommendations && !isLoadingRecommendations && (
                 renderRandomRecommendations()
               )}
@@ -2141,9 +2146,8 @@ const addToSlotForced = useCallback(
             </div>
             {/* close grid container */}
           </div>
-
-        </main>
-      </div>
+        </div>
+      </main>
     </div>
   );
 };

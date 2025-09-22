@@ -408,68 +408,71 @@ export const ECommerceUI: React.FC<HomeProps> = ({ onNavigate }) => {
               <FilterChips />
             </div>
           )}
-          <div className="filter-panel__refresh">
-            <Button onClick={refresh} size="sm" variant="outline" loading={loading}>
-              추천 다시 받기
-            </Button>
-          </div>
         </section>
 
         <section className="product-section" aria-label="추천 상품">
-          {/* 좌측 세로 젠더 필터 버튼 (데스크톱에서만 노출) */}
-          <div className="hidden md:flex fixed left-4 top-1/2 -translate-y-1/2 z-30">
-            <div className="flex flex-col gap-2 rounded-full border border-[var(--divider)] bg-white/90 p-1 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-white/70">
-              {([
-                {key: 'all', label: '전체'},
-                {key: 'male', label: '남성'},
-                {key: 'female', label: '여성'},
-              ] as {key: GenderFilter; label: string}[]).map(({key, label}) => {
-                const active = gender === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() => setGender(key)}
-                    className={[
-                      'px-4 py-2 rounded-full text-sm font-medium transition-all duration-150 text-left',
-                      active ? 'bg-black text-white shadow-sm' : 'text-[var(--text-strong)] hover:bg-gray-100',
-                    ].join(' ')}
-                    title={`${label} 상품만 보기`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
+          <div className="product-section__body">
+            {/* 좌측 세로 젠더 필터 버튼 (데스크톱에서만 노출) */}
+            <div className="gender-filter-floating">
+              <div className="gender-filter-floating__stack">
+                {([
+                  {key: 'all', label: '전체'},
+                  {key: 'male', label: '남성'},
+                  {key: 'female', label: '여성'},
+                ] as {key: GenderFilter; label: string}[]).map(({key, label}) => {
+                  const active = gender === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => setGender(key)}
+                      className={[
+                        'px-4 py-2 rounded-full text-sm font-medium transition-all duration-150 text-left',
+                        active ? 'bg-black text-white shadow-sm px-3 py-1.5' : 'text-[var(--text-strong)] hover:bg-gray-100',
+                      ].join(' ')}
+                      title={`${label} 상품만 보기`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
 
-          {/* 검색 입력은 TopBar로 이동. TopBar에서 'semantic-search' 이벤트를 발생시킵니다. */}
-          <div style={{display:'none'}} />
+            <div className="product-section__content">
+              {/* 검색 입력은 TopBar로 이동. TopBar에서 'semantic-search' 이벤트를 발생시킵니다. */}
+              <div style={{display:'none'}} />
 
-          <div className="section-title">
-            <h2 className="section-title__heading">오늘의 베스트 선택</h2>
-          </div>
-          {error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-[#d6001c]">
-              {error}
+              <div className="section-title">
+                <h2 className="section-title__heading">오늘의 베스트 선택</h2>
+              </div>
+              {error && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-[#d6001c]">
+                  {error}
+                </div>
+              )}
+              <div className="product-grid">
+                {gridItems.map((item, index) => (
+                  <React.Fragment key={item.id}>
+                    <ProductCard
+                      item={item}
+                      onBuy={handleAddToCart}
+                      onVirtualFitting={handleDirectFitting}
+                    />
+                    {((index + 1) % 4 === 0) && index + 1 < gridItems.length && (
+                      <div className="product-grid__divider" aria-hidden="true" />
+                    )}
+                  </React.Fragment>
+                ))}
+              </div>
+              {loading && (
+                <div className="mt-6 text-center text-sm text-[var(--text-muted)]">
+                  추천 상품을 불러오는 중입니다...
+                </div>
+              )}
             </div>
-          )}
-          <div className="product-grid">
-            {gridItems.map((item) => (
-              <ProductCard
-                key={item.id}
-                item={item}
-                onBuy={handleAddToCart}
-                onVirtualFitting={handleDirectFitting}
-              />
-            ))}
           </div>
-          {loading && (
-            <div className="mt-6 text-center text-sm text-[var(--text-muted)]">
-              추천 상품을 불러오는 중입니다...
-            </div>
-          )}
         </section>
       </div>
 

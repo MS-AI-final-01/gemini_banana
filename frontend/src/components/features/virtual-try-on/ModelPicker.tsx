@@ -10,6 +10,7 @@ interface ModelPickerProps {
   selectedId?: string;
   // notify parent which model id was selected
   onSelectModel?: (id: string) => void;
+  variant?: 'card' | 'inline';
 }
 
 const MODEL_FILES = [
@@ -37,7 +38,7 @@ function nameVariants(id: string): string[] {
   ];
 }
 
-export const ModelPicker: React.FC<ModelPickerProps> = ({ onPick, direction = 'horizontal', selectedId, onSelectModel }) => {
+export const ModelPicker: React.FC<ModelPickerProps> = ({ onPick, direction = 'horizontal', selectedId, onSelectModel, variant = 'card' }) => {
   const candidates = useMemo(() => MODEL_FILES.map(m => {
     const names = nameVariants(m.id);
     const folders = ['models', 'model']; // support both public/models and public/model
@@ -91,6 +92,65 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({ onPick, direction = 'h
     }
     console.warn('Failed to load any model image', lastErr);
   };
+
+  if (variant === 'inline') {
+    return (
+      <div className="flex w-full flex-col gap-3 rounded-2xl border border-gray-200 bg-white/70 p-3">
+        <div className="flex items-start justify-between">
+          <div className="leading-tight">
+            <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+              AI 모델
+            </h3>
+            <p className="text-[11px] text-gray-500">선택(샘플)</p>
+          </div>
+          <span className="text-[10px] text-gray-400">public/models</span>
+        </div>
+        <div className="-mx-1 flex w-full gap-2.5 overflow-x-auto pb-2 px-1 snap-x">
+          {candidates.map((m) => {
+            const isSelected = selectedId === m.id;
+            const ringClass = isSelected
+              ? 'ring-2 ring-blue-500'
+              : 'ring-1 ring-transparent focus:ring-blue-400';
+            return (
+              <div
+                key={m.id}
+                className="flex min-w-[7.25rem] max-w-[7.25rem] flex-shrink-0 snap-start flex-col gap-2 rounded-xl border border-gray-200 bg-white p-2 shadow-sm md:min-w-[7.75rem] md:max-w-[7.75rem] lg:min-w-[8.25rem] lg:max-w-[8.25rem]"
+              >
+                <button
+                  type="button"
+                  onClick={() => handlePick(m.urls, m.id, m.id)}
+                  className={`relative w-full aspect-square overflow-hidden rounded-lg bg-gray-100 transition focus:outline-none focus:ring-2 ${ringClass}`}
+                  title="이미지를 클릭하면 사용합니다"
+                >
+                  {previewMap[m.id] ? (
+                    <img
+                      src={previewMap[m.id]}
+                      alt={m.label}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-xs text-gray-400">
+                      이미지 없음
+                    </div>
+                  )}
+                </button>
+                <p className="text-sm font-medium text-gray-800 truncate text-center">
+                  {m.label}
+                </p>
+                <Button
+                  size="sm"
+                  variant={isSelected ? 'primary' : 'outline'}
+                  onClick={() => handlePick(m.urls, m.id, m.id)}
+                >
+                  {isSelected ? '선택됨' : '사용'}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   if (direction === 'vertical') {
     return (
@@ -171,4 +231,3 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({ onPick, direction = 'h
 };
 
 export default ModelPicker;
-
