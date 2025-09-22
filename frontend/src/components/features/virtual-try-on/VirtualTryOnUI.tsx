@@ -23,6 +23,38 @@ import { ResultDisplay } from "./ResultDisplay";
 import { SnsShareDialog } from "./SnsShareDialog";
 import { TryOnHistory } from "./TryOnHistory";
 import { videoHistory } from "../../../services/video_history.service";
+import { FALLBACK_BY_CATEGORY } from "../../../data/fallbackRecommendations";
+
+type GenderFilter = "all" | "male" | "female";
+
+const matchesGender = (item: RecommendationItem, gender: GenderFilter): boolean => {
+  if (gender === "all") {
+    return true;
+  }
+  const value = (item.gender || "").toLowerCase();
+  if (!value) {
+    return true;
+  }
+  if (value === "unisex") {
+    return true;
+  }
+  if (gender === "male") {
+    return value === "male" || value === "men" || value === "man";
+  }
+  return value === "female" || value === "women" || value === "woman";
+};
+
+const fallbackByCategory = (
+  category: "top" | "pants" | "shoes" | "outer",
+  gender: GenderFilter,
+  limit: number,
+): RecommendationItem[] => {
+  const pool = (FALLBACK_BY_CATEGORY[category] || []).filter((item) =>
+    matchesGender(item, gender)
+  );
+  const source = pool.length ? pool : FALLBACK_BY_CATEGORY[category] || [];
+  return source.slice(0, limit);
+};
 
 // Simple feature-flag helper (treats undefined as ON)
 const isFeatureEnabled = (value: unknown): boolean => {
@@ -927,7 +959,6 @@ const addToSlotForced = useCallback(
   const [maxPrice, setMaxPrice] = useState<string>("");
   const [excludeTagsInput, setExcludeTagsInput] = useState<string>("");
 
-  type GenderFilter = "all" | "male" | "female";
   const [vtGender, setVtGender] = useState<GenderFilter>("all");
   const [randomItemsByCat, setRandomItemsByCat] = useState<{
     top: RecommendationItem[];
@@ -944,7 +975,7 @@ const addToSlotForced = useCallback(
         const per = Math.max(1, Math.floor(limit / 4));
         const gparam =
           vtGender && vtGender !== "all" ? `&gender=${vtGender}` : "";
-        const [tops, pants, shoes, outers] = await Promise.all([
+        const [topsRaw, pantsRaw, shoesRaw, outersRaw] = await Promise.all([
           apiClient
             .get<RecommendationItem[]>(
               `/api/recommend/random?limit=${per}&category=top${gparam}`
@@ -966,10 +997,38 @@ const addToSlotForced = useCallback(
             )
             .catch(() => [] as RecommendationItem[]),
         ]);
-        setRandomItemsByCat({ top: tops, pants, shoes, outer: outers });
+        const sanitize = (
+          bucket: "top" | "pants" | "shoes" | "outer",
+          data: RecommendationItem[],
+        ) => {
+          const filtered = data.filter((item) => matchesGender(item, vtGender));
+          if (filtered.length >= per) {
+            return filtered.slice(0, per);
+          }
+          const enriched = filtered.length
+            ? filtered
+            : data.slice(0, per);
+          if (enriched.length >= per) {
+            return enriched;
+          }
+          const fallback = fallbackByCategory(bucket, vtGender, per);
+          return [...enriched, ...fallback].slice(0, per);
+        };
+
+        setRandomItemsByCat({
+          top: sanitize("top", topsRaw),
+          pants: sanitize("pants", pantsRaw),
+          shoes: sanitize("shoes", shoesRaw),
+          outer: sanitize("outer", outersRaw),
+        });
       } catch (error) {
         console.warn("랜덤 아이템 로드 실패", error);
-        setRandomItemsByCat({ top: [], pants: [], shoes: [], outer: [] });
+        setRandomItemsByCat({
+          top: fallbackByCategory("top", vtGender, Math.max(1, Math.floor(limit / 4))),
+          pants: fallbackByCategory("pants", vtGender, Math.max(1, Math.floor(limit / 4))),
+          shoes: fallbackByCategory("shoes", vtGender, Math.max(1, Math.floor(limit / 4))),
+          outer: fallbackByCategory("outer", vtGender, Math.max(1, Math.floor(limit / 4))),
+        });
       } finally {
         setIsLoadingRandom(false);
       }
@@ -1866,6 +1925,13 @@ const addToSlotForced = useCallback(
               />
             </div>
 
+            <div className="lg:col-span-12 order-4">
+              {!recommendations && !isLoadingRecommendations && (
+                renderRandomRecommendations()
+              )}
+            </div>
+
+
             {/* Action and Result Section */}
             <div
               id="result-panel"
@@ -2049,140 +2115,7 @@ const addToSlotForced = useCallback(
                 </Card>
               )}
               {/* ModelPicker moved to left sidebar in input section */}
-              {likedItems.length > 0 && (
-                <Card className="space-y-3">
-                  <h3 className="text-lg font-semibold text-gray-800">
-                    Quick add from likes
-                  </h3>
-                  <div className="overflow-x-auto whitespace-nowrap flex gap-4 pb-1">
-                    {likedItems.map((item) => {
-                      const cat = (item.category ?? "").toLowerCase();
-
-                      let slot: "top" | "pants" | "shoes" | "outer" | null =
-                        null;
-                      if (cat.includes("outer")) slot = "outer";
-                      else if (cat.includes("top")) slot = "top";
-                      else if (cat.includes("pant")) slot = "pants";
-                      else if (cat.includes("shoe")) slot = "shoes";
-
-                      if (!slot) return null;
-
-                      const handleAdd = async () => {
-                        if (!item.imageUrl) {
-                          addToast(toast.error("Image URL is missing."));
-                          return;
-                        }
-                        try {
-                          const uploaded = await imageProxy.toUploadedImage(
-                            item.imageUrl,
-                            item.title
-                          );
-                          if (slot === "top") {
-                            setTopImage(uploaded);
-                            setTopLabel(item.title);
-                            recordInput(
-                              { top: uploaded },
-                              { top: item.title },
-                              "delta",
-                              undefined,
-                              { top: String(item.id) }
-                            );
-                          }
-                          if (slot === "pants") {
-                            setPantsImage(uploaded);
-                            setPantsLabel(item.title);
-                            recordInput(
-                              { pants: uploaded },
-                              { pants: item.title },
-                              "delta",
-                              undefined,
-                              { pants: String(item.id) }
-                            );
-                          }
-                          if (slot === "shoes") {
-                            setShoesImage(uploaded);
-                            setShoesLabel(item.title);
-                            recordInput(
-                              { shoes: uploaded },
-                              { shoes: item.title },
-                              "delta",
-                              undefined,
-                              { shoes: String(item.id) }
-                            );
-                          }
-                          if (slot === "outer") {
-                            setOuterImage(uploaded);
-                            setOuterLabel(item.title);
-                            recordInput(
-                              { outer: uploaded },
-                              { outer: item.title },
-                              "delta",
-                              undefined,
-                              { outer: String(item.id) }
-                            );
-                          }
-
-                          addToast(
-                            toast.success(
-                              "Added to fitting queue",
-                              `${item.title} -> ${slot}`,
-                              { duration: 2000 }
-                            )
-                          );
-
-                          if (!personImage) {
-                            addToast(
-                              toast.info(
-                                "Choose a model first",
-                                "Select a base model to apply outfits automatically.",
-                                { duration: 1800 }
-                              )
-                            );
-                          }
-                        } catch (error: any) {
-                          addToast(
-                            toast.error(
-                              "Failed to load liked item",
-                              error?.message
-                            )
-                          );
-                        }
-                      };
-
-                      // ✅ JSX는 handleAdd 밖에서 반환
-                      return (
-                        <div key={item.id} className="inline-block w-40">
-                          <div
-                            className="aspect-square rounded-lg overflow-hidden bg-gray-100 ring-1 ring-transparent hover:ring-blue-200 cursor-pointer"
-                            onClick={handleAdd}
-                            title={`Tap to use this liked ${slot}`}
-                          >
-                            {item.imageUrl && (
-                              <img
-                                src={item.imageUrl}
-                                alt={item.title}
-                                className="w-full h-full object-cover"
-                              />
-                            )}
-                          </div>
-                          <p
-                            className="mt-1 text-xs text-gray-600 truncate"
-                            title={item.title}
-                          >
-                            {item.title}
-                          </p>
-                          <div className="mt-1">
-                            <Button size="sm" onClick={handleAdd}>
-                              Use ({slot})
-                            </Button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </Card>
-              )}
-
+              
               {/* Recommendations Section */}
               <div className="mt-8">
                 {isLoadingRecommendations ? (
@@ -2199,9 +2132,7 @@ const addToSlotForced = useCallback(
                     recommendations={recommendations}
                     onItemClick={addCatalogItemToSlot}
                   />
-                ) : (
-                  renderRandomRecommendations()
-                )}
+                ) : null}
               </div>
               {/* LLM 평가: 히스토리 선택 최소 수 */}
               {/* HistoryEvaluator removed per request */}
@@ -2210,6 +2141,7 @@ const addToSlotForced = useCallback(
             </div>
             {/* close grid container */}
           </div>
+
         </main>
       </div>
     </div>

@@ -50,6 +50,7 @@ export interface RecommendationItem {
   discountRate?: number; // 할인율 (0.0 ~ 1.0)
   discountPercentage?: number; // 할인 퍼센트 (0 ~ 100)
   brandName?: string; // 브랜드명
+  gender?: 'male' | 'female' | 'unisex';
 }
 
 export interface CategoryRecommendations {

@@ -28,7 +28,7 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # 비루트 워커용 사용자 생성(마스터 프로세스는 root 유지)
 RUN addgroup -g 1001 -S frontend \
     && adduser -S frontend -u 1001 -G frontend \
-    && mkdir -p /var/cache/nginx /var/run/nginx /var/log/nginx \
-    && chown -R frontend:frontend /usr/share/nginx/html /var/cache/nginx /var/run /var/log/nginx
+    && mkdir -p /var/cache/nginx /var/log/nginx /tmp/nginx \
+    && chown -R frontend:frontend /usr/share/nginx/html /var/cache/nginx /var/log/nginx /tmp/nginx
 EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]

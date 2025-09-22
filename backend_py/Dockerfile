@@ -32,3 +32,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # FastAPI 애플리케이션 실행
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3001"]
+COPY keys/service-account.json /app/keys/service-account.json
+

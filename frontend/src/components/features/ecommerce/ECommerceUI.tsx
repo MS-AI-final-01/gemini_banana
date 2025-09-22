@@ -18,6 +18,29 @@ function formatPriceKRW(n: number) {
 
 type GenderFilter = 'all' | 'male' | 'female';
 
+const matchesGender = (item: RecommendationItem, gender: GenderFilter): boolean => {
+  if (gender === 'all') {
+    return true;
+  }
+  const value = (item.gender || '').toLowerCase();
+  if (!value) {
+    return true;
+  }
+  if (value === 'unisex') {
+    return true;
+  }
+  if (gender === 'male') {
+    return value === 'male' || value === 'men' || value === 'man';
+  }
+  return value === 'female' || value === 'women' || value === 'woman';
+};
+
+const fallbackByGender = (limit: number, gender: GenderFilter): RecommendationItem[] => {
+  const base = FALLBACK_RECOMMENDATIONS.filter((item) => matchesGender(item, gender));
+  const pool = base.length ? base : FALLBACK_RECOMMENDATIONS;
+  return pool.slice(0, limit);
+};
+
 const useRandomProducts = (limit: number = 24, gender: GenderFilter = 'all') => {
   const [items, setItems] = useState<RecommendationItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -29,15 +52,22 @@ const useRandomProducts = (limit: number = 24, gender: GenderFilter = 'all') => 
     try {
       const qs = new URLSearchParams({ limit: String(limit) });
       if (gender && gender !== 'all') qs.set('gender', gender);
-      const data = await apiClient.get<RecommendationItem[]>(`/api/recommend/random?${qs.toString()}`, { timeout: 45000 });
+      const data = await apiClient.get<RecommendationItem[]>(
+        `/api/recommend/random?${qs.toString()}`,
+        { timeout: 45000 }
+      );
       if (!Array.isArray(data) || data.length === 0) {
-        setItems(FALLBACK_RECOMMENDATIONS.slice(0, limit));
+        setItems(fallbackByGender(limit, gender));
         setError('추천 상품이 비어 있어 기본 목록을 표시합니다.');
       } else {
-        setItems(data);
+        const filtered = gender === 'all'
+          ? data
+          : data.filter((item) => matchesGender(item, gender));
+        const pool = filtered.length ? filtered : fallbackByGender(limit, gender);
+        setItems(pool.slice(0, limit));
       }
     } catch (e: any) {
-      setItems(FALLBACK_RECOMMENDATIONS.slice(0, limit));
+      setItems(fallbackByGender(limit, gender));
       const message = (e?.message || '추천 상품을 불러오는 데 실패했습니다.').toString();
       const lower = message.toLowerCase();
       if (lower.includes('abort') || lower.includes('timeout')) {

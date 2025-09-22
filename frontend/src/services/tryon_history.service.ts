@@ -41,6 +41,38 @@ const KEY_OUTPUTS = "app:tryon:history:outputs:v1";
 type Listener = () => void;
 const listeners: Set<Listener> = new Set();
 
+type FingerprintSource = {
+  person: TryOnInputHistoryItem["person"];
+  topLabel?: string;
+  pantsLabel?: string;
+  shoesLabel?: string;
+  outerLabel?: string;
+  topProductId?: string;
+  pantsProductId?: string;
+  shoesProductId?: string;
+  outerProductId?: string;
+};
+
+const normalizeValue = (id?: string | null, label?: string): string | null => {
+  if (id && id.trim()) {
+    return id.trim();
+  }
+  if (label && label.trim()) {
+    return label.trim().toLowerCase();
+  }
+  return null;
+};
+
+const buildInputFingerprint = (source: FingerprintSource): string => {
+  return JSON.stringify({
+    person: source.person,
+    top: normalizeValue(source.topProductId, source.topLabel),
+    pants: normalizeValue(source.pantsProductId, source.pantsLabel),
+    shoes: normalizeValue(source.shoesProductId, source.shoesLabel),
+    outer: normalizeValue(source.outerProductId, source.outerLabel),
+  });
+};
+
 function read<T>(key: string): T[] {
   try {
     const raw = localStorage.getItem(key);
@@ -124,45 +156,14 @@ export const tryOnHistory = {
 
     // 중복 체크: 같은 상품이 이미 히스토리에 있는지 확인 (슬롯 무관)
     const existingList = read<TryOnInputHistoryItem>(KEY_INPUTS);
-    const isDuplicate = existingList.some((existing) => {
-      // 상품 ID가 있는 경우에만 중복 체크
-      const itemProductIds = [
-        item.topProductId,
-        item.pantsProductId,
-        item.shoesProductId,
-        item.outerProductId,
-      ].filter(Boolean);
-
-      const existingProductIds = [
-        existing.topProductId,
-        existing.pantsProductId,
-        existing.shoesProductId,
-        existing.outerProductId,
-      ].filter(Boolean);
-
-      // 상품 ID가 없으면 중복 체크 안함 (업로드 이미지 등)
-      if (itemProductIds.length === 0) {
-        return false;
-      }
-
-      // 같은 상품 ID가 하나라도 있으면 중복
-      return itemProductIds.some((id) => existingProductIds.includes(id));
-    });
+    const newFingerprint = buildInputFingerprint(item);
+    const isDuplicate = existingList.some(
+      (existing) => buildInputFingerprint(existing) === newFingerprint
+    );
 
     if (isDuplicate) {
       console.log("중복된 상품이므로 히스토리에 추가하지 않음", {
-        item: {
-          topProductId: item.topProductId,
-          pantsProductId: item.pantsProductId,
-          shoesProductId: item.shoesProductId,
-          outerProductId: item.outerProductId,
-        },
-        existing: existingList.map((ex) => ({
-          topProductId: ex.topProductId,
-          pantsProductId: ex.pantsProductId,
-          shoesProductId: ex.shoesProductId,
-          outerProductId: ex.outerProductId,
-        })),
+        fingerprint: newFingerprint,
       });
       return;
     }
