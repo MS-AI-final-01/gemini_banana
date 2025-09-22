@@ -11,26 +11,23 @@
         "dev": "vite",
         "dev:py": "vite",
         "dev:local": "npm run install:local && vite",
-
         "build": "npm run build:clean && npm run build:prod",
         "build:clean": "node -e \"const fs = require('fs'); if (fs.existsSync('dist')) fs.rmSync('dist', {recursive: true});\"",
         "build:prod": "cross-env NODE_ENV=production vite build",
         "build:server": "npm run install:server && npm run build:prod",
         "build:simple": "vite build",
-
         "preview": "vite preview",
         "test": "vitest --run",
         "lint": "eslint . --ext ts,tsx --max-warnings 0",
         "lint:fix": "eslint . --ext ts,tsx --fix",
-
         "install:local": "npm install --no-optional",
         "install:server": "npm install && npm install @rollup/rollup-linux-x64-gnu --save-optional",
         "postinstall": "node -e \"if(process.platform === 'linux' && process.arch === 'x64') { try { require('child_process').execSync('npm install @rollup/rollup-linux-x64-gnu --save-optional', {stdio:'inherit'}); } catch(e) { console.log('Optional Linux binary install skipped:', e.message); } }\""
     },
     "dependencies": {
+        "html2canvas": "^1.4.1",
         "react": "^18.2.0",
-        "react-dom": "^18.2.0",
-        "html2canvas": "^1.4.1"
+        "react-dom": "^18.2.0"
     },
     "devDependencies": {
         "@testing-library/jest-dom": "^6.4.5",
@@ -54,6 +51,6 @@
         "vitest": "^1.0.4"
     },
     "optionalDependencies": {
-        "@rollup/rollup-linux-x64-gnu": "^4.50.1"
+        "@rollup/rollup-linux-x64-gnu": "^4.52.0"
     }
 }
