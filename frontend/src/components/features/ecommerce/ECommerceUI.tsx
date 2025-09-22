@@ -93,10 +93,41 @@ interface ProductCardProps {
   onVirtualFitting?: (item: RecommendationItem) => void;
 }
 
+const cleanProductTitle = (title?: string): string => {
+  if (!title) return '';
+
+  let result = title;
+
+  // 1) Remove content wrapped in [] or ()
+  result = result.replace(/\[[^\]]*\]/g, '').replace(/\([^)]*\)/g, '');
+
+  // 2) Remove everything after the first slash (inclusive)
+  const slashIndex = result.indexOf('/');
+  if (slashIndex !== -1) {
+    result = result.slice(0, slashIndex);
+  }
+
+  // 4) Remove words consisting only of repeated digits (e.g., 1111) or general digits
+  result = result
+    .split(/\s+/)
+    .filter((word) => {
+      const digitsOnly = word.replace(/[^0-9]/g, '');
+      if (!digitsOnly) return true;
+      if (/^([0-9])\1{1,}$/.test(digitsOnly)) return false; // repeated same digit
+      if (/^[0-9]+$/.test(digitsOnly)) return false; // numeric word
+      return true;
+    })
+    .join(' ');
+
+  // Normalize extra spaces
+  return result.replace(/\s{2,}/g, ' ').trim();
+};
+
 const ProductCard: React.FC<ProductCardProps> = ({ item, onBuy, onVirtualFitting }) => {
   const { addToast } = useToast();
   const [liked, setLiked] = useState<boolean>(() => likesService.isLiked(item.id));
   const [showOverlay, setShowOverlay] = useState(false);
+  const displayTitle = cleanProductTitle(item.title) || item.title;
 
   const onToggleLike: React.MouseEventHandler = (e) => {
     e.preventDefault();
@@ -159,7 +190,7 @@ const ProductCard: React.FC<ProductCardProps> = ({ item, onBuy, onVirtualFitting
       </div>
       <div className="product-card__meta">
         <p className="product-card__brand">{item.brandName || item.tags?.[0] || 'MUSINSA'}</p>
-        <p className="product-card__title">{item.title}</p>
+        <p className="product-card__title">{displayTitle}</p>
         <div className="product-card__pricing">
           <span className="product-card__price">{formatPriceKRW(item.price)}</span>
           {typeof discount === 'number' && discount > 0 && (
