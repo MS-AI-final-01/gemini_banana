@@ -419,33 +419,36 @@ def recommend_from_upload(req: RecommendationRequest) -> RecommendationResponse:
             analysis_text = _convert_analysis_to_text(analysis)
             print(f"📝 분석 텍스트: {analysis_text}")
             
-            # 임베딩 서버에서 벡터 생성
-            embedding_vector = embedding_client.get_embedding(analysis_text)
-            print(f"✅ 임베딩 벡터 생성 완료 (길이: {len(embedding_vector)})")
+            # 임베딩 서버에서 Dense + ColBERT 벡터 생성
+            colbert_response = embedding_client.get_colbert_embedding(analysis_text)
+            dense_vector = colbert_response["dense_embedding"]
+            colbert_vectors = colbert_response["colbert_embeddings"]
+            print(f"✅ 하이브리드 벡터 생성 완료 - Dense: {len(dense_vector)}차원, ColBERT: {len(colbert_vectors)}토큰")
             
             # 우선순위: IndexOnlyRecommender -> DbPosRecommender
             if index_only_recommender and index_only_recommender.available():
-                print(f"🔍 IndexOnlyRecommender로 임베딩 기반 추천 중...")
-                # IndexOnlyRecommender 사용
+                print(f"🔍 IndexOnlyRecommender로 하이브리드 추천 중...")
+                # IndexOnlyRecommender 사용 (Dense + ColBERT)
                 db_recs = index_only_recommender.recommend_by_embedding(
-                    query_embedding=embedding_vector,
+                    query_embedding=dense_vector,
+                    query_colbert=colbert_vectors,
                     top_k=opts.maxPerCategory or 3,
                     w_dense=0.5,
                     w_maxsim=0.5
                 )
-                print(f"📊 IndexOnlyRecommender 추천 결과: {len(db_recs)}개")
+                print(f"📊 IndexOnlyRecommender 하이브리드 추천 결과: {len(db_recs)}개")
                 candidate_recs = _format_db_recommendations(db_recs)
             elif db_pos_recommender.available():
-                print(f"🗄️ DB에서 임베딩 기반 추천 중...")
-                # 임베딩 기반 추천 사용
+                print(f"🗄️ DB에서 Dense 임베딩 기반 추천 중...")
+                # Dense 임베딩 기반 추천 사용 (ColBERT는 지원하지 않음)
                 db_recs = db_pos_recommender.recommend_by_embedding(
-                    query_embedding=embedding_vector,
+                    query_embedding=dense_vector,
                     top_k=opts.maxPerCategory or 3,
                     alpha=0.7,  # 임베딩 가중치
                     w1=0.8,     # 스타일 가중치
                     w2=0.2,     # 가격 가중치
                 )
-                print(f"📊 DB 추천 결과: {len(db_recs)}개")
+                print(f"📊 DB Dense 추천 결과: {len(db_recs)}개")
                 candidate_recs = _format_db_recommendations(db_recs)
             else:
                 print(f"⚠️ 추천 서비스 사용 불가, CatalogService로 폴백")

@@ -398,7 +398,7 @@ class IndexOnlyRecommender:
         
         return None
 
-    def _cos_maxsim(self, q_tok: np.ndarray, d_tok: np.ndarray) -> float:
+    def compute_maxsim(self, q_tok: np.ndarray, d_tok: np.ndarray, per_token_mode: str = "raw") -> float:
         """ColBERT MaxSim 계산"""
         if q_tok.size == 0 or d_tok.size == 0:
             return 0.0
@@ -414,7 +414,51 @@ class IndexOnlyRecommender:
         sims = np.dot(q, d.T)  # (Q, L)
         per_tok = np.max(sims, axis=1)  # (Q,)
         
+        if per_token_mode == "relu":
+            per_tok = np.maximum(per_tok, 0.0)
+        elif per_token_mode == "shift01":
+            per_tok = (per_tok + 1.0) * 0.5
+        elif per_token_mode != "raw":
+            raise ValueError("per_token_mode ∈ {raw,relu,shift01}")
+        
         return float(per_tok.sum())
+    
+    @staticmethod
+    def _minmax_norm(x: np.ndarray) -> np.ndarray:
+        """Min-Max 정규화"""
+        x = np.asarray(x, dtype="float32")
+        if x.size == 0:
+            return x
+        x_min, x_max = float(np.min(x)), float(np.max(x))
+        if x_max - x_min < 1e-12:
+            return np.zeros_like(x, dtype="float32")
+        return (x - x_min) / (x_max - x_min)
+    
+    def combine_scores(self, dense_scores, maxsim_scores, w_dense=0.5, w_maxsim=0.5, use_norm=True):
+        """Dense와 ColBERT 점수를 결합"""
+        d = np.asarray(dense_scores, dtype="float32")
+        if maxsim_scores is None:
+            d_used = self._minmax_norm(d) if use_norm else d
+            m_used = np.zeros_like(d_used, dtype="float32")
+            combined = w_dense * d_used
+            return combined, d_used, m_used
+        
+        m = np.asarray(maxsim_scores, dtype="float32")
+        finite_m = np.isfinite(m)
+        
+        if use_norm:
+            d_used = self._minmax_norm(d)
+            m_used = np.zeros_like(m, dtype="float32")
+            if finite_m.any():
+                m_used[finite_m] = self._minmax_norm(m[finite_m])
+        else:
+            d_used = d
+            m_used = np.zeros_like(m, dtype="float32")
+            if finite_m.any():
+                m_used[finite_m] = m[finite_m]
+        
+        combined = w_dense * d_used + w_maxsim * m_used
+        return combined, d_used, m_used
 
     def recommend_indices(
         self,
@@ -470,7 +514,7 @@ class IndexOnlyRecommender:
                 if doc_tok is None or doc_tok.size == 0:
                     maxsim_list.append(float("-inf"))
                 else:
-                    maxsim_list.append(self._cos_maxsim(q_tok, doc_tok))
+                    maxsim_list.append(self.compute_maxsim(q_tok, doc_tok))
             
             maxsim_scores = np.array(maxsim_list, dtype="float32")
         
@@ -551,12 +595,13 @@ class IndexOnlyRecommender:
         self,
         query_embedding: List[float],
         *,
+        query_colbert: Optional[List[List[float]]] = None,
         category: Optional[str] = None,
         top_k: int = 5,
         w_dense: Optional[float] = None,
         w_maxsim: Optional[float] = None
     ) -> List[Dict]:
-        """임베딩 기반 추천 (기존 API 호환)"""
+        """임베딩 기반 추천 (Dense + ColBERT 하이브리드)"""
         if not self.available():
             raise RuntimeError("IndexOnlyRecommender unavailable")
         
@@ -566,13 +611,36 @@ class IndexOnlyRecommender:
         # 쿼리 벡터를 FAISS에 직접 검색
         query_vec = np.array(query_embedding, dtype=np.float32).reshape(1, -1)
         
-        dense_scores, cand = self.dense_index.search(query_vec, top_k * 3)  # 더 많은 후보
+        # 더 많은 후보를 가져와서 ColBERT 재랭킹 수행
+        dense_scores, cand = self.dense_index.search(query_vec, top_k * 10)  # 더 많은 후보
         dense_scores = dense_scores[0]
         cand_ids = cand[0].astype(int)
         
-        # 임베딩 기반 추천에서는 ColBERT를 사용할 수 없음 (텍스트가 없음)
-        # Dense 점수만 사용
-        combined = dense_scores
+        # ColBERT 재랭킹 (제공된 경우)
+        if query_colbert is not None and self.colbert_loaded:
+            query_colbert_vec = np.array(query_colbert, dtype=np.float32)
+            maxsim_scores = []
+            
+            for cand_id in cand_ids:
+                if cand_id in self.colbert_data:
+                    doc_tokens = self.colbert_data[cand_id]['vecs']
+                    if doc_tokens.size > 0:
+                        maxsim_score = self.compute_maxsim(query_colbert_vec, doc_tokens)
+                        maxsim_scores.append(maxsim_score)
+                    else:
+                        maxsim_scores.append(float('-inf'))
+                else:
+                    maxsim_scores.append(float('-inf'))
+            
+            maxsim_scores = np.array(maxsim_scores, dtype=np.float32)
+            
+            # Dense + ColBERT 점수 결합
+            combined, dense_used, maxsim_used = self.combine_scores(
+                dense_scores, maxsim_scores, w_dense, w_maxsim, use_norm=True
+            )
+        else:
+            # ColBERT가 없으면 Dense 점수만 사용
+            combined = dense_scores
         
         # 정렬
         order = np.argsort(combined)[::-1]

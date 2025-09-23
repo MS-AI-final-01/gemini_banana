@@ -4,7 +4,7 @@ VM에서 실행되는 임베딩 서버와 통신
 """
 import os
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import httpx
 
 
@@ -103,6 +103,58 @@ class EmbeddingClient:
                     embeddings.append([0.0] * 1024)  # bge-m3 기본 길이
         
         return embeddings
+    
+    def get_colbert_embedding(self, text: str) -> Dict[str, Any]:
+        """
+        텍스트를 Dense + ColBERT 벡터로 변환
+        
+        Args:
+            text: 변환할 텍스트
+            
+        Returns:
+            Dict[str, Any]: {
+                "dense_embedding": List[float],
+                "colbert_embeddings": List[List[float]],
+                "model_name": str,
+                "text_length": int,
+                "num_tokens": int
+            }
+            
+        Raises:
+            RuntimeError: 임베딩 서버 오류 시
+        """
+        if not text or not text.strip():
+            raise ValueError("Text cannot be empty")
+        
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.post(
+                    f"{self.base_url}/embed/colbert",
+                    json={"text": text.strip()}
+                )
+                response.raise_for_status()
+                
+                data = response.json()
+                
+                # 응답 검증
+                required_fields = ["dense_embedding", "colbert_embeddings", "model_name", "text_length", "num_tokens"]
+                for field in required_fields:
+                    if field not in data:
+                        raise RuntimeError(f"Missing field in ColBERT response: {field}")
+                
+                return data
+                
+        except httpx.HTTPStatusError as e:
+            self.logger.error(f"ColBERT embedding server HTTP error: {e.response.status_code} - {e.response.text}")
+            raise RuntimeError(f"ColBERT embedding server HTTP error: {e.response.status_code}")
+            
+        except httpx.TimeoutException:
+            self.logger.error("ColBERT embedding server timeout")
+            raise RuntimeError("ColBERT embedding server timeout")
+            
+        except Exception as e:
+            self.logger.error(f"ColBERT embedding server error: {e}")
+            raise RuntimeError(f"ColBERT embedding server error: {e}")
     
     def get_server_info(self) -> dict:
         """
