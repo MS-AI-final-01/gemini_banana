@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from ..models import RecommendationItem
 from ..services.external_recommender import external_recommender
 from ..services.pos_recommender import get_pos_recommender
-from ..services.db_recommender import db_pos_recommender
+from ..services.db_recommender import db_pos_recommender, index_only_recommender
 from ..services.catalog import get_catalog_service
 from ..services.llm_ranker import llm_ranker
 
@@ -35,9 +35,8 @@ class PositionsRequest(BaseModel):
     positions: List[int] = Field(..., description="Selected product positions (0-based)")
     top_k: int = Field(3, ge=1, le=200, description="Pool size before final cut")
     final_k: int = Field(3, ge=1, le=50, description="Final number of items to return")
-    alpha: float = Field(0.38, ge=0.0, le=10.0)
-    w1: float = Field(0.97, ge=0.0, le=1.0)
-    w2: float = Field(0.03, ge=0.0, le=1.0)
+    w_dense: float = Field(0.5, ge=0.0, le=1.0, description="Dense embedding weight")
+    w_maxsim: float = Field(0.5, ge=0.0, le=1.0, description="MaxSim weight")
     categories: Optional[List[str]] = Field(default=None, description="Restrict to these categories (e.g., ['top'])")
     use_llm_rerank: Optional[bool] = Field(default=None, description="Enable Azure LLM rerank when available")
     items: Optional[List[SelectedItem]] = Field(default=None, description="Optional: full metadata of selected products")
@@ -204,20 +203,37 @@ def recommend_by_positions(req: PositionsRequest, response: Response) -> List[Re
         target_cats = _infer_target_categories_from_positions(req.positions)
     target_cats = [c for c in target_cats if c in {"top", "pants", "shoes", "outer", "accessories"}] or []
 
-    # Prefer DB recommender if available, then file-based, then external
+    # 우선순위: IndexOnlyRecommender -> DbPosRecommender -> PosRecommender -> External
     pool: List[Dict] | None = None
-    if db_pos_recommender.available():
+    
+    # 1. IndexOnlyRecommender 시도
+    if index_only_recommender and index_only_recommender.available():
+        try:
+            items = index_only_recommender.recommend(
+                positions=req.positions,
+                top_k=req.top_k,
+                w_dense=req.w_dense,
+                w_maxsim=req.w_maxsim,
+                same_category=True
+            )
+            pool = items
+        except Exception as e:
+            # fall through to next recommender
+            pass
+
+    # 2. DbPosRecommender 시도
+    if pool is None and db_pos_recommender.available():
         try:
             items = db_pos_recommender.recommend(
                 positions=req.positions,
                 top_k=req.top_k,
-                alpha=req.alpha,
-                w1=req.w1,
-                w2=req.w2,
+                alpha=0.38,  # 기본값 사용
+                w1=0.97,
+                w2=0.03,
             )
             pool = items
         except Exception as e:
-            # fall through to file/external
+            # fall through to next recommender
             pass
 
     # Prefer internal (file-based) recommender when available
@@ -228,9 +244,9 @@ def recommend_by_positions(req: PositionsRequest, response: Response) -> List[Re
                 items = pos_rec.recommend(
                     positions=req.positions,
                     top_k=req.top_k,
-                    alpha=req.alpha,
-                    w1=req.w1,
-                    w2=req.w2,
+                    w_dense=req.w_dense,
+                    w_maxsim=req.w_maxsim,
+                    same_category=True
                 )
                 pool = items
             except Exception as e:
@@ -240,9 +256,9 @@ def recommend_by_positions(req: PositionsRequest, response: Response) -> List[Re
                         items = external_recommender.recommend_by_positions(
                             positions=req.positions,
                             top_k=req.top_k,
-                            alpha=req.alpha,
-                            w1=req.w1,
-                            w2=req.w2,
+                            alpha=0.38,
+                            w1=0.97,
+                            w2=0.03,
                         )
                         pool = items
                     except Exception as e2:
@@ -256,9 +272,9 @@ def recommend_by_positions(req: PositionsRequest, response: Response) -> List[Re
             items = external_recommender.recommend_by_positions(
                 positions=req.positions,
                 top_k=req.top_k,
-                alpha=req.alpha,
-                w1=req.w1,
-                w2=req.w2,
+                alpha=0.38,
+                w1=0.97,
+                w2=0.03,
             )
             pool = items
         except Exception as e:
@@ -312,23 +328,31 @@ def recommend_by_positions(req: PositionsRequest, response: Response) -> List[Re
             if len(cat_pool) < req.final_k:
                 try:
                     booster_k = max(req.top_k * 5, 200)
-                    # try DB first
+                    # try recommenders in order
                     boosted: List[Dict] | None = None
-                    if db_pos_recommender.available():
+                    if index_only_recommender and index_only_recommender.available():
+                        boosted = index_only_recommender.recommend(
+                            positions=req.positions,
+                            top_k=booster_k,
+                            w_dense=req.w_dense,
+                            w_maxsim=req.w_maxsim,
+                            same_category=True
+                        )
+                    elif db_pos_recommender.available():
                         boosted = db_pos_recommender.recommend(
                             positions=req.positions,
                             top_k=booster_k,
-                            alpha=req.alpha,
-                            w1=req.w1,
-                            w2=req.w2,
+                            alpha=0.38,
+                            w1=0.97,
+                            w2=0.03,
                         )
                     elif get_pos_recommender().available():
                         boosted = get_pos_recommender().recommend(
                             positions=req.positions,
                             top_k=booster_k,
-                            alpha=req.alpha,
-                            w1=req.w1,
-                            w2=req.w2,
+                            w_dense=req.w_dense,
+                            w_maxsim=req.w_maxsim,
+                            same_category=True
                         )
                     if boosted:
                         more = [it for it in boosted if _normalize_category(str(it.get("category"))) == cat]

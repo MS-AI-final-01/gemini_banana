@@ -15,7 +15,7 @@ from ..models import (
 )
 from ..services.azure_openai_service import azure_openai_service
 from ..services.catalog import get_catalog_service
-from ..services.db_recommender import db_pos_recommender, _normalize_gender as _db_norm_gender
+from ..services.db_recommender import db_pos_recommender, index_only_recommender, _normalize_gender as _db_norm_gender
 from ..services.embedding_client import embedding_client
 from ..services.llm_ranker import llm_ranker
 from ..utils.slot_classifier import validate_slot_data
@@ -156,7 +156,8 @@ def _infer_slots_from_analysis(analysis: dict | None) -> set[str]:
 def _embedded_recommendations(
     selected_ids: dict[str, str], max_per_category: int
 ) -> dict[str, list[dict]]:
-    if not selected_ids or not db_pos_recommender.available():
+    # 우선순위: IndexOnlyRecommender -> DbPosRecommender
+    if not selected_ids:
         return {}
 
     by_category: dict[str, list[dict]] = {
@@ -166,6 +167,7 @@ def _embedded_recommendations(
         "outer": [],
         "accessories": [],
     }
+    
     for slot_cat, value in selected_ids.items():
         slot_norm = _normalize_category(slot_cat)
         if slot_norm not in by_category:
@@ -176,9 +178,29 @@ def _embedded_recommendations(
             continue
 
         pool_size = max_per_category * 6 if max_per_category > 0 else 18
-        try:
-            pool = db_pos_recommender.recommend(positions=[pos], top_k=pool_size)
-        except Exception:
+        
+        # 1. IndexOnlyRecommender 시도
+        pool = None
+        if index_only_recommender and index_only_recommender.available():
+            try:
+                pool = index_only_recommender.recommend(
+                    positions=[pos], 
+                    top_k=pool_size,
+                    w_dense=0.5,
+                    w_maxsim=0.5,
+                    same_category=True
+                )
+            except Exception:
+                pass
+        
+        # 2. DbPosRecommender 시도
+        if pool is None and db_pos_recommender.available():
+            try:
+                pool = db_pos_recommender.recommend(positions=[pos], top_k=pool_size)
+            except Exception:
+                continue
+
+        if not pool:
             continue
 
         for item in pool:
@@ -401,8 +423,19 @@ def recommend_from_upload(req: RecommendationRequest) -> RecommendationResponse:
             embedding_vector = embedding_client.get_embedding(analysis_text)
             print(f"✅ 임베딩 벡터 생성 완료 (길이: {len(embedding_vector)})")
             
-            # DB에서 임베딩 기반 추천 (by-positions와 동일한 방식)
-            if db_pos_recommender.available():
+            # 우선순위: IndexOnlyRecommender -> DbPosRecommender
+            if index_only_recommender and index_only_recommender.available():
+                print(f"🔍 IndexOnlyRecommender로 임베딩 기반 추천 중...")
+                # IndexOnlyRecommender 사용
+                db_recs = index_only_recommender.recommend_by_embedding(
+                    query_embedding=embedding_vector,
+                    top_k=opts.maxPerCategory or 3,
+                    w_dense=0.5,
+                    w_maxsim=0.5
+                )
+                print(f"📊 IndexOnlyRecommender 추천 결과: {len(db_recs)}개")
+                candidate_recs = _format_db_recommendations(db_recs)
+            elif db_pos_recommender.available():
                 print(f"🗄️ DB에서 임베딩 기반 추천 중...")
                 # 임베딩 기반 추천 사용
                 db_recs = db_pos_recommender.recommend_by_embedding(
@@ -415,7 +448,7 @@ def recommend_from_upload(req: RecommendationRequest) -> RecommendationResponse:
                 print(f"📊 DB 추천 결과: {len(db_recs)}개")
                 candidate_recs = _format_db_recommendations(db_recs)
             else:
-                print(f"⚠️ DB 추천 서비스 사용 불가, CatalogService로 폴백")
+                print(f"⚠️ 추천 서비스 사용 불가, CatalogService로 폴백")
                 candidate_recs = _build_candidates(analysis, svc, opts)
         except Exception as e:
             print(f"❌ 임베딩 서버 연동 실패: {e}")

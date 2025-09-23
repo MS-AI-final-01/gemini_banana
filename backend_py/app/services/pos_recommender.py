@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from .catalog import get_catalog_service
+from .db_recommender import IndexOnlyRecommender
 
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -135,6 +136,13 @@ class PosRecommender:
 
 
 @lru_cache(maxsize=1)
-def get_pos_recommender() -> PosRecommender:
-    return PosRecommender()
+def get_pos_recommender() -> IndexOnlyRecommender:
+    """
+    IndexOnlyRecommender를 반환하는 함수 (기존 PosRecommender 대신)
+    """
+    try:
+        return IndexOnlyRecommender()
+    except Exception as e:
+        # IndexOnlyRecommender 실패 시 기존 PosRecommender로 폴백
+        return PosRecommender()
 
