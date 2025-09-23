@@ -6,6 +6,13 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import numpy as np
+import re
+
+# Robust gender detectors (English word-boundary safe; Korean keyword safe)
+RE_UNISEX = re.compile(r"(?:\buni(?:sex)?\b|男女|공용|유니섹스|남녀|남여|공용/유니섹스|all\s*genders?)", re.I)
+RE_KIDS = re.compile(r"(?:\bkid(?:s)?\b|\bchild(?:ren)?\b|\byouth\b|\bjunior\b|boys?\s*&\s*girls?|아동|키즈)", re.I)
+RE_FEMALE = re.compile(r"(?:\bwomen\b|\bwoman\b|\bfemale\b|\bladies\b|\blady\b|\bgirls?\b|여성|여자|우먼)", re.I)
+RE_MALE = re.compile(r"(?:\bmen\b|\bman\b|\bmale\b|\bboys?\b|\bmens\b|\bman's\b|\bmans\b|남성|남자|맨)", re.I)
 
 try:
     from sqlalchemy import create_engine, text  # type: ignore
@@ -28,6 +35,11 @@ class DbConfig:
 
     @property
     def url(self) -> str:
+        # Allow hard-disable via env flag without editing DB_* vars
+        flag = os.getenv("DB_RECO_ENABLED", "").strip().lower()
+        # Default remains enabled when flag is unset; only explicit false/0/off disables
+        if flag in {"0", "false", "off", "no"}:
+            return ""
         if not (self.host and self.user):
             return ""
         return (
@@ -57,22 +69,28 @@ def _normalize_slot(raw: Optional[str]) -> str:
 
 
 def _normalize_gender(raw: Optional[str]) -> str:
-    g = (str(raw or "").strip().lower())
+    g = str(raw or "").strip()
     if not g:
         return "unknown"
-    male_kw = ["male", "man", "men", "m", "남", "남성", "남자"]
-    female_kw = ["female", "woman", "women", "w", "여", "여성", "여자"]
-    unisex_kw = ["unisex", "uni", "男女", "공용", "공용/유니섹스", "유니섹스"]
-    kids_kw = ["kid", "kids", "child", "children", "아동", "키즈"]
-    if any(k in g for k in male_kw):
-        return "male"
-    if any(k in g for k in female_kw):
-        return "female"
-    if any(k in g for k in unisex_kw):
+    # 언더스코어/대시/슬래시 등을 공백으로 치환해 단어 경계 인식 강화
+    g = re.sub(r"[_\-\/]+", " ", g)
+
+    # 공용/키즈 우선 판정
+    if RE_UNISEX.search(g):
         return "unisex"
-    if any(k in g for k in kids_kw):
+    if RE_KIDS.search(g):
         return "kids"
-    return g
+
+    # 단어 경계 사용으로 'women' 안의 'men' 오탐 방지
+    female = bool(RE_FEMALE.search(g))
+    male = bool(RE_MALE.search(g))
+    if female and male:
+        return "unisex"
+    if female:
+        return "female"
+    if male:
+        return "male"
+    return g.lower()
 
 
 class DbPosRecommender:
@@ -99,10 +117,13 @@ class DbPosRecommender:
                     self.cfg.url,
                     pool_pre_ping=True,
                     connect_args={
+                        # Keep TCP healthy
                         "keepalives": 1,
                         "keepalives_idle": 30,
                         "keepalives_interval": 10,
                         "keepalives_count": 5,
+                        # Fast fail when DB is unreachable (seconds)
+                        "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
                     },
                 )
                 with self.engine.connect() as conn:
@@ -218,6 +239,43 @@ class DbPosRecommender:
     def available(self) -> bool:
         return self.emb_norm is not None and len(self.products) > 0
 
+    def _calculate_similarity_scores(
+        self, 
+        query_vec: np.ndarray, 
+        *, 
+        alpha: float = 0.38, 
+        w1: float = 0.97, 
+        w2: float = 0.03
+    ) -> np.ndarray:
+        """
+        코사인 유사도 + 가격 가중치 계산 공통 함수
+        
+        Args:
+            query_vec: 정규화된 쿼리 벡터
+            alpha: 가격 가중치 파라미터
+            w1: 유사도 가중치
+            w2: 가격 가중치
+            
+        Returns:
+            np.ndarray: 최종 점수 배열
+        """
+        emb_norm = self.emb_norm  # type: ignore[assignment]
+        prices = self.prices  # type: ignore[assignment]
+        
+        # 코사인 유사도 계산
+        sim = emb_norm @ query_vec
+        
+        # 가격 가중치 계산
+        avg_price = float(prices.mean())
+        clog = np.log1p(prices)
+        qlog = np.log1p(avg_price)
+        price_score = np.exp(-alpha * np.abs(clog - qlog))
+        
+        # 최종 점수 계산
+        total = w1 * sim + w2 * price_score
+        
+        return total
+
     def recommend(
         self,
         positions: List[int],
@@ -236,20 +294,16 @@ class DbPosRecommender:
 
         k = max(1, min(int(top_k), n))
         emb_norm = self.emb_norm  # type: ignore[assignment]
-        prices = self.prices  # type: ignore[assignment]
 
+        # 쿼리 벡터 생성 및 정규화
         q = emb_norm[positions].mean(axis=0)
         qn = np.linalg.norm(q)
         if qn == 0:
             qn = 1e-8
         q = q / qn
 
-        sim = emb_norm @ q
-        qprice = float(prices[positions].mean())
-        clog = np.log1p(prices)
-        qlog = np.log1p(qprice)
-        price_score = np.exp(-alpha * np.abs(clog - qlog))
-        total = w1 * sim + w2 * price_score
+        # 공통 함수로 점수 계산
+        total = self._calculate_similarity_scores(q, alpha=alpha, w1=w1, w2=w2)
         total[np.array(positions, dtype=int)] = -np.inf
 
         if k >= n:
@@ -294,8 +348,6 @@ class DbPosRecommender:
 
         n = len(self.products)
         k = max(1, min(int(top_k), n))
-        emb_norm = self.emb_norm  # type: ignore[assignment]
-        prices = self.prices  # type: ignore[assignment]
 
         # 쿼리 벡터 정규화
         query_vec = np.array(query_embedding, dtype=np.float32)
@@ -304,17 +356,8 @@ class DbPosRecommender:
             query_norm = 1e-8
         query_vec = query_vec / query_norm
 
-        # 코사인 유사도 계산
-        sim = emb_norm @ query_vec
-        
-        # 가격 가중치 계산 (평균 가격 기준)
-        avg_price = float(prices.mean())
-        clog = np.log1p(prices)
-        qlog = np.log1p(avg_price)
-        price_score = np.exp(-alpha * np.abs(clog - qlog))
-        
-        # 최종 점수 계산
-        total = w1 * sim + w2 * price_score
+        # 공통 함수로 점수 계산
+        total = self._calculate_similarity_scores(query_vec, alpha=alpha, w1=w1, w2=w2)
 
         # 카테고리 필터링
         if category:
@@ -351,4 +394,7 @@ class DbPosRecommender:
         return out
 
 
-db_pos_recommender = DbPosRecommender()
+_flag = os.getenv("DB_RECO_ENABLED", "").strip().lower()
+# Enabled by default unless explicitly disabled via env
+_db_enabled = False if _flag in {"0", "false", "off", "no"} else True
+db_pos_recommender = DbPosRecommender() if _db_enabled else DbPosRecommender(DbConfig(host="", user=""))

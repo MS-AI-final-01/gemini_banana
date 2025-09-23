@@ -35,14 +35,14 @@ export const HistoryEvaluator: React.FC = () => {
   return (
     <Card className="space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-gray-800">결과 평가(LLM)</h3>
+        <h3 className="text-lg font-semibold text-gray-800">결과 평가 (LLM)</h3>
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={() => setSelected({})} disabled={loading}>선택 해제</Button>
           <Button size="sm" onClick={evaluate} disabled={!canEval} loading={loading}>평가하기</Button>
         </div>
       </div>
       {outputs.length === 0 ? (
-        <div className="text-sm text-gray-500">평가할 결과 이미지가 없습니다.</div>
+        <div className="text-sm text-gray-500">아직 저장된 결과 이미지가 없습니다.</div>
       ) : (
         <div className="grid grid-cols-3 gap-3">
           {outputs.map((o: TryOnOutputHistoryItem) => (

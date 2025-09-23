@@ -30,7 +30,7 @@ export const ClothingItemOverlay: React.FC<ClothingItemOverlayProps> = ({
       className="absolute inset-0 bg-black/60 backdrop-blur-sm rounded-lg flex items-center justify-center z-10"
       onClick={handleOverlayClick}
     >
-      {/* X 버튼 (우상단) */}
+      {/* X 버튼 (선택) */}
       {onRemove && (
         <button
           onClick={(e) => {

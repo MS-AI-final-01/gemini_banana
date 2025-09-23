@@ -19,6 +19,11 @@ export type TryOnInputHistoryItem = {
   pantsProduct?: RecommendationItem;
   shoesProduct?: RecommendationItem;
   outerProduct?: RecommendationItem;
+  // 업로드된 이미지 데이터 (base64)
+  topImageData?: string;
+  pantsImageData?: string;
+  shoesImageData?: string;
+  outerImageData?: string;
 };
 
 export type TryOnOutputHistoryItem = {
@@ -122,32 +127,30 @@ export const tryOnHistory = {
       return;
     }
 
-    // 중복 체크: 같은 상품이 이미 히스토리에 있는지 확인 (슬롯 무관)
+    // Set 기반 중복 체크: 조합을 문자열로 만들어서 O(1) 체크
     const existingList = read<TryOnInputHistoryItem>(KEY_INPUTS);
-    const isDuplicate = existingList.some((existing) => {
-      // 상품 ID가 있는 경우에만 중복 체크
-      const itemProductIds = [
-        item.topProductId,
-        item.pantsProductId,
-        item.shoesProductId,
-        item.outerProductId,
-      ].filter(Boolean);
 
-      const existingProductIds = [
-        existing.topProductId,
-        existing.pantsProductId,
-        existing.shoesProductId,
-        existing.outerProductId,
-      ].filter(Boolean);
+    // 현재 아이템의 조합 ID 생성
+    const itemKey = [
+      item.topProductId || "null",
+      item.pantsProductId || "null",
+      item.shoesProductId || "null",
+      item.outerProductId || "null",
+    ].join(",");
 
-      // 상품 ID가 없으면 중복 체크 안함 (업로드 이미지 등)
-      if (itemProductIds.length === 0) {
-        return false;
-      }
+    // 기존 아이템들의 조합 ID를 Set으로 생성
+    const existingKeys = new Set(
+      existingList.map((existing) =>
+        [
+          existing.topProductId || "null",
+          existing.pantsProductId || "null",
+          existing.shoesProductId || "null",
+          existing.outerProductId || "null",
+        ].join(",")
+      )
+    );
 
-      // 같은 상품 ID가 하나라도 있으면 중복
-      return itemProductIds.some((id) => existingProductIds.includes(id));
-    });
+    const isDuplicate = existingKeys.has(itemKey);
 
     if (isDuplicate) {
       console.log("중복된 상품이므로 히스토리에 추가하지 않음", {
@@ -172,7 +175,20 @@ export const tryOnHistory = {
       ts: Date.now(),
       ...item,
     };
-    const list = [now, ...existingList];
+
+    // 새로운 항목을 맨 앞에 추가
+    let list = [now, ...existingList];
+
+    // 12개를 넘으면 오래된 항목들 제거 (큐 방식)
+    if (list.length > 12) {
+      console.log(
+        `🔔 히스토리 12개 제한 초과 (${list.length}개), 오래된 ${
+          list.length - 12
+        }개 제거`
+      );
+      list = list.slice(0, 12); // 처음 12개만 유지
+    }
+
     write(KEY_INPUTS, list);
 
     // 저장 후 용량 관리 실행
@@ -189,10 +205,6 @@ export const tryOnHistory = {
 
     // 이미지 압축 (크기 줄이기) - 더 강한 압축
     const compressedImageDataUri = await compressImage(imageDataUri, 0.5, 600);
-    console.log(
-      "🔔 압축 후 이미지 데이터 길이:",
-      compressedImageDataUri.length
-    );
 
     const now: TryOnOutputHistoryItem = {
       id: `o-${Date.now()}-${Math.random().toString(36).slice(2)}`,

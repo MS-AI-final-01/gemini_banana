@@ -132,6 +132,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+temp_*.txt
 
 # Logs
 logs

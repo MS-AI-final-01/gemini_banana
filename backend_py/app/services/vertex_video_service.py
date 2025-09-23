@@ -3,9 +3,10 @@ import os
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
-
 import httpx
 from fastapi import HTTPException
+from urllib.parse import quote
+from google.auth import default
 from google.auth.transport.requests import Request
 
 

@@ -1,7 +1,7 @@
 ﻿// Frontend type definitions
 
 export interface UploadedImage {
-  file: File;
+  file?: File;
   previewUrl: string;
   base64: string;
   mimeType: string;
@@ -24,7 +24,6 @@ export interface VirtualTryOnRequest {
   // Person image is now optional to allow outfit-only composition
   person: ApiFile | null;
   clothingItems: ClothingItems;
-  prompt: string | null; // Optional prompt for AI generation
 }
 
 export interface VirtualTryOnResponse {

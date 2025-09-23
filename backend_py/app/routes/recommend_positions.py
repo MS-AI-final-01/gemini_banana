@@ -33,7 +33,7 @@ class SelectedItem(BaseModel):
 
 class PositionsRequest(BaseModel):
     positions: List[int] = Field(..., description="Selected product positions (0-based)")
-    top_k: int = Field(30, ge=1, le=200, description="Pool size before final cut")
+    top_k: int = Field(3, ge=1, le=200, description="Pool size before final cut")
     final_k: int = Field(3, ge=1, le=50, description="Final number of items to return")
     alpha: float = Field(0.38, ge=0.0, le=10.0)
     w1: float = Field(0.97, ge=0.0, le=1.0)
@@ -377,22 +377,7 @@ def recommend_by_positions(req: PositionsRequest, response: Response) -> List[Re
                             break
                 except Exception:
                     pass
-            if use_llm and llm_ranker.available():
-                analysis = build_analysis_for(cat)
-                cand = {cat: cat_pool[: min(len(cat_pool), max(req.final_k * 5, 20))]}
-                ids_map = {str(it.get("id")): it for it in cat_pool}
-                picked = llm_ranker.rerank(analysis, cand, top_k=req.final_k) or {}
-                order_ids = picked.get(cat) or []
-                ranked = [ids_map[i] for i in order_ids if i in ids_map]
-                if len(ranked) < req.final_k:
-                    for it in cat_pool:
-                        if it not in ranked:
-                            ranked.append(it)
-                        if len(ranked) >= req.final_k:
-                            break
-                cat_pick_map[cat] = _diversify_pick(ranked, req.final_k)
-            else:
-                cat_pick_map[cat] = _diversify_pick(cat_pool, req.final_k)
+            cat_pick_map[cat] = _diversify_pick(cat_pool, req.final_k)
             cat_pool_map[cat] = cat_pool
 
         # Global de-dup across categories while keeping per-category quotas

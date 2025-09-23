@@ -10,6 +10,13 @@
   padding: 0 32px;
 }
 
+/* 검색창 위 3개 박스 숨김: 헤드라인 스트립, 배너 슬라이드, 카테고리 쇼케이스 */
+.headline-strip,
+.hero-section,
+.category-showcase {
+  display: none !important;
+}
+
 @media (max-width: 1200px) {
   .main-container {
     padding: 0 28px;
@@ -220,7 +227,7 @@
 
 .product-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 24px;
 }
 
@@ -269,7 +276,8 @@
 .product-card__image {
   position: relative;
   width: 100%;
-  padding-top: 125%;
+  /* Height doubled to reduce top/bottom cropping */
+  padding-top: 150%;
   border-radius: calc(var(--radius-card) - 4px);
   overflow: hidden;
   background: var(--surface-muted);

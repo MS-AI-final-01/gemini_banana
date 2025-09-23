@@ -157,6 +157,8 @@ class CatalogService:
             val = analysis.get(key)
             if isinstance(val, list):
                 keywords.extend([str(v) for v in val])
+        
+        print(f"🔍 GPT-4.1 Mini 분석에서 추출한 키워드: {keywords}")
 
         recs = {c: [] for c in self.config.categories}
         for cat in self.config.categories:

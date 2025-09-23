@@ -159,6 +159,24 @@ class AzureOpenAIService:
         ]
         return self._chat_to_json(content)
 
+    def parse_search_text(self, text: str) -> Dict:
+        """Extract shopping-related entities from a free-form query text.
+
+        Returns JSON with keys:
+          - category: one of [top, pants, shoes, outer, accessories] or null
+          - tokens: string[] concise search tokens
+          - colors: string[] normalized color names
+          - gender: one of [male, female, unisex, kids] or null
+          - priceRange: { min?: number, max?: number }
+        """
+        if not self.available():
+            raise RuntimeError("Azure OpenAI is not configured")
+        content: List[Dict] = [
+            {"type": "text", "text": self._parse_prompt()},
+            {"type": "text", "text": text},
+        ]
+        return self._chat_to_json(content)
+
     # --------------------------- internal helpers ------------------------ #
     def _chat_to_json(self, content: List[Dict]) -> Dict:
         if self.client is not None:
@@ -266,6 +284,19 @@ class AzureOpenAIService:
         return (
             "Analyze this virtual try-on image and output ONLY JSON with keys: "
             "top, pants, shoes, overall_style, colors, fit, silhouette (arrays of concise attributes)."
+        )
+
+    @staticmethod
+    def _parse_prompt() -> str:
+        return (
+            "You are a shopping search assistant. Given a short description (Korean or "
+            "English), extract ONLY JSON with keys: category, tokens, colors, gender, priceRange.\n"
+            "- category: one of [top, pants, shoes, outer, accessories] or null.\n"
+            "- tokens: 3-8 concise keywords for catalog search (no stopwords).\n"
+            "- colors: normalized color names like [black, white, beige, navy, blue, green, red, brown, gray].\n"
+            "- gender: one of [male, female, unisex, kids] or null.\n"
+            "- priceRange: object with optional integer won values {min, max}. If user hints 'under 5만원' → {max:50000}.\n"
+            "Respond with STRICT JSON only."
         )
 
 

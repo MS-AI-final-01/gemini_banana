@@ -1,4 +1,4 @@
-﻿import {
+import {
   RecommendationItem,
   RecommendationRequest,
   RecommendationResponse,
@@ -83,39 +83,7 @@ export class VirtualTryOnService {
     }
   }
 
-  /**
-   * Get product recommendations based on virtual try-on result
-   * @param request - Recommendation request with generated image
-   * @returns Promise resolving to product recommendations
-   */
-  async getRecommendationsFromFitting(
-    request: RecommendationRequest
-  ): Promise<RecommendationResponse> {
-    try {
-      const response = await apiClient.post<RecommendationResponse>(
-        "/api/recommend/from-fitting",
-        request,
-        {
-          timeout: 45000, // Extended timeout for AI processing
-        }
-      );
-
-      if (response.error) {
-        throw new ApiError(response.error, 400, "RECOMMENDATION_ERROR");
-      }
-
-      return response;
-    } catch (error) {
-      if (error instanceof ApiError) {
-        throw error;
-      }
-      throw new ApiError(
-        "Failed to get recommendations from fitting",
-        500,
-        "RECOMMENDATION_FAILED"
-      );
-    }
-  }
+  // getRecommendationsFromFitting 제거됨 - getRecommendations로 통합
 
   /**
    * Get concise style tips based on generated image or history images
@@ -181,10 +149,7 @@ export class VirtualTryOnService {
    * Check if recommendations are currently loading
    */
   isLoadingRecommendations(): boolean {
-    return (
-      apiClient.isLoading("POST", "/api/recommend") ||
-      apiClient.isLoading("POST", "/api/recommend/from-fitting")
-    );
+    return apiClient.isLoading("POST", "/api/recommend");
   }
 
   /**

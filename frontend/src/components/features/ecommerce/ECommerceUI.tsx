@@ -1,6 +1,7 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import './ECommerceUI.css';
 import { apiClient } from '../../../services/api.service';
+import { FALLBACK_RECOMMENDATIONS } from '../../../data/fallbackRecommendations';
 import { likesService } from '../../../services/likes.service';
 import type { RecommendationItem } from '../../../types';
 import { HeartIcon } from '../../icons/HeartIcon';
@@ -9,12 +10,15 @@ import { CategoryRow } from '../home/CategoryRow';
 import { FilterChips } from '../home/FilterChips';
 import { ProductCardOverlay } from './ProductCardOverlay';
 import { StickySidebar } from './StickySidebar';
+import { SearchChatWidget } from '../search/SearchChatWidget';
 
 function formatPriceKRW(n: number) {
   return new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW' }).format(n);
 }
 
-const useRandomProducts = (limit: number = 24) => {
+type GenderFilter = 'all' | 'male' | 'female';
+
+const useRandomProducts = (limit: number = 24, gender: GenderFilter = 'all') => {
   const [items, setItems] = useState<RecommendationItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,10 +27,24 @@ const useRandomProducts = (limit: number = 24) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiClient.get<RecommendationItem[]>(`/api/recommend/random?limit=${limit}`);
-      setItems(data);
+      const qs = new URLSearchParams({ limit: String(limit) });
+      if (gender && gender !== 'all') qs.set('gender', gender);
+      const data = await apiClient.get<RecommendationItem[]>(`/api/recommend/random?${qs.toString()}`, { timeout: 45000 });
+      if (!Array.isArray(data) || data.length === 0) {
+        setItems(FALLBACK_RECOMMENDATIONS.slice(0, limit));
+        setError('추천 상품이 비어 있어 기본 목록을 표시합니다.');
+      } else {
+        setItems(data);
+      }
     } catch (e: any) {
-      setError(e?.message || '추천 상품을 불러오지 못했습니다.');
+      setItems(FALLBACK_RECOMMENDATIONS.slice(0, limit));
+      const message = (e?.message || '추천 상품을 불러오는 데 실패했습니다.').toString();
+      const lower = message.toLowerCase();
+      if (lower.includes('abort') || lower.includes('timeout')) {
+        setError('서버 응답이 지연되어 기본 추천 목록을 보여드립니다.');
+      } else {
+        setError(message);
+      }
     } finally {
       setLoading(false);
     }
@@ -34,7 +52,7 @@ const useRandomProducts = (limit: number = 24) => {
 
   useEffect(() => {
     fetchItems();
-  }, []);
+  }, [gender, limit]);
 
   return { items, loading, error, refresh: fetchItems };
 };
@@ -83,6 +101,7 @@ const ProductCard: React.FC<ProductCardProps> = ({ item, onBuy, onVirtualFitting
   };
 
   const discount = item.discountRate ? Math.round(item.discountRate * 100) : item.discountPercentage;
+
 
   return (
     <article
@@ -162,17 +181,17 @@ const promoSlides: PromoSlide[] = [
   {
     id: 'run-lab',
     eyebrow: 'RUN CLUB',
-    title: '새벽 러닝을 위한 테크웨어 컬렉션',
-    description: '땀을 빠르게 배출하고 체온을 유지해 주는 고기능성 자켓과 러닝 슈즈를 만나보세요.',
+    title: '러닝 시즌, 새로운 기록을 준비하세요',
+    description: '가볍게 달리고 땀 식히기 좋은 기능성 웨어와 액세서리를 만나보세요.',
     image: 'https://images.unsplash.com/photo-1600965962361-9035dbfd1c50?auto=format&fit=crop&w=900&q=80',
-    ctaLabel: '버추얼 피팅 바로가기',
+    ctaLabel: '가상 피팅 바로가기',
     background: 'radial-gradient(circle at 15% 20%, #4f46e590, transparent 60%), linear-gradient(120deg, #111827 0%, #1e1b4b 60%, #111827 100%)'
   },
   {
     id: 'studio-fit',
     eyebrow: 'STUDIO FIT',
-    title: '필라테스를 위한 우먼스 퍼포먼스웨어',
-    description: '섬세하게 잡아주는 텐션과 부드러운 촉감을 갖춘 크롭탑 & 레깅스 셋업을 엄선했습니다.',
+    title: '미니멀 실루엣, 스튜디오 감성룩',
+    description: '차분한 톤에 포인트 되는 컬러 매치로 트렌디한 데일리룩 완성.',
     image: 'https://images.unsplash.com/photo-1527718641255-324f8e2d0421?auto=format&fit=crop&w=900&q=80',
     ctaLabel: '추천 상품 둘러보기',
     background: 'radial-gradient(circle at 80% 20%, #f472b63d, transparent 65%), linear-gradient(135deg, #312e81 0%, #4c1d95 55%, #312e81 100%)'
@@ -180,10 +199,10 @@ const promoSlides: PromoSlide[] = [
   {
     id: 'street-play',
     eyebrow: 'STREET PLAY',
-    title: '주말 농구에 어울리는 스트리트 무드',
-    description: '로우탑 스니커즈와 와이드 팬츠, 오버핏 아우터로 완성하는 여유로운 실루엣.',
+    title: '스트릿 무드의 레이어드 스타일',
+    description: '와이드 팬츠와 루즈한 상의로 여유롭게 연출하는 캐주얼 룩.',
     image: 'https://images.unsplash.com/photo-1508804185872-d7badad00f7d?auto=format&fit=crop&w=900&q=80',
-    ctaLabel: '코디 가이드 확인하기',
+    ctaLabel: '룩 자세히 보기',
     background: 'radial-gradient(circle at 20% 80%, #f9731633, transparent 60%), linear-gradient(135deg, #0f172a 0%, #1e293b 60%, #0f172a 100%)'
   }
 ];
@@ -257,8 +276,13 @@ const PromoCarousel: React.FC<PromoCarouselProps> = ({ onTryOn }) => {
 };
 
 export const ECommerceUI: React.FC<HomeProps> = ({ onNavigate }) => {
-  const { items, loading, error, refresh } = useRandomProducts(24);
-  const gridItems = useMemo(() => items, [items]);
+  const [gender, setGender] = useState<GenderFilter>('all');
+  const { items, loading, error, refresh } = useRandomProducts(24, gender);
+  const [gridItems, setGridItems] = useState<RecommendationItem[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => { setGridItems(items); }, [items]);
+  // gridItems was a memo of items; replaced by state so we can inject semantic search results
   const [selectedItems, setSelectedItems] = useState<{
     outer?: RecommendationItem;
     top?: RecommendationItem;
@@ -290,7 +314,7 @@ export const ECommerceUI: React.FC<HomeProps> = ({ onNavigate }) => {
     setSelectedItems({});
   };
 
-  // 사이드바에 담기 (기존 handleAddToCart)
+  // 장바구니(피팅 바) 추가
   const handleAddToCart = (product: RecommendationItem) => {
     const category = resolveCartCategory(product);
     if (!category) {
@@ -301,14 +325,13 @@ export const ECommerceUI: React.FC<HomeProps> = ({ onNavigate }) => {
       [category]: product,
     }));
     
-    console.log('🔔 메인페이지에서 상품 클릭:', { product, category });
+    console.log('🛒 상품 클릭:', { product, category });
   };
 
-  // 바로 피팅룸에 박히는 기능 (상품추천처럼)
+  // 바로 가상피팅으로 이동 (추천 카드)
   const handleDirectFitting = (product: RecommendationItem) => {
-    console.log('🔔 바로 피팅룸으로 이동:', product.title);
+    console.log('🚀 가상피팅으로 이동:', product.title);
     try {
-      // VirtualTryOnUI에서 기대하는 키 이름으로 저장
       const itemWithTimestamp = {
         ...product,
         timestamp: Date.now()
@@ -316,44 +339,45 @@ export const ECommerceUI: React.FC<HomeProps> = ({ onNavigate }) => {
       localStorage.setItem('app:pendingVirtualFittingItem', JSON.stringify(itemWithTimestamp));
       onNavigate?.('try-on');
     } catch (error) {
-      console.warn('직접 피팅 데이터 저장 실패', error);
+      console.warn('가상피팅 이동 저장 실패', error);
     }
   };
+
+  // 상단 프로모션(헤드라인/배너/카테고리) 노출 플래그
+  const showTopPromos = false;
+  // TopBar 검색창과 연동: semantic-search 이벤트 수신 시 검색 실행
+  React.useEffect(() => {
+    const handler = async (ev: Event) => {
+      const anyEv = ev as any;
+      const q = (anyEv?.detail?.q || '').toString();
+      const limit = Number(anyEv?.detail?.limit || 24);
+      if (!q) return;
+      try {
+        const qs = new URLSearchParams({ q, limit: String(limit) }).toString();
+        const data = await apiClient.get<RecommendationItem[]>(`/api/search/semantic?${qs}`);
+        setGridItems(data);
+        setSearchQuery(q);
+      } catch (err) {
+        console.warn('semantic search failed (from TopBar)', err);
+      }
+    };
+    window.addEventListener('semantic-search' as any, handler);
+    return () => window.removeEventListener('semantic-search' as any, handler);
+  }, []);
+
+  const showFilterChips = false;
 
   return (
     <div className="main-wrap">
       <div className="main-container">
-        <section className="headline-strip">
-          <div>
-            <div className="headline-strip__title">스포츠 종목 아이템 추천</div>
-            <div className="headline-strip__meta">
-              <span>러닝</span>
-              <span>바디밸런스</span>
-              <span>에어플로 테크</span>
+        {/* top promos removed */}
+
+        <section className="filter-panel" aria-label="필터">
+          {showFilterChips && (
+            <div className="filter-panel__chips">
+              <FilterChips />
             </div>
-          </div>
-          <div className="headline-strip__actions">
-            <Button variant="outline" size="sm" onClick={() => onNavigate?.('try-on')}>
-              버추얼 피팅 이동
-            </Button>
-            <Button variant="ghost" size="sm" onClick={refresh} loading={loading}>
-              새로고침
-            </Button>
-          </div>
-        </section>
-
-        <section className="hero-section" aria-label="프로모션 영역">
-          <PromoCarousel onTryOn={() => onNavigate?.('try-on')} />
-        </section>
-
-        <section className="category-showcase" aria-label="카테고리 탐색">
-          <CategoryRow />
-        </section>
-
-        <section className="filter-panel" aria-label="필터 영역">
-          <div className="filter-panel__chips">
-            <FilterChips />
-          </div>
+          )}
           <div className="filter-panel__refresh">
             <Button onClick={refresh} size="sm" variant="outline" loading={loading}>
               추천 다시 받기
@@ -361,9 +385,40 @@ export const ECommerceUI: React.FC<HomeProps> = ({ onNavigate }) => {
           </div>
         </section>
 
-        <section className="product-section" aria-label="추천 상품 목록">
+        <section className="product-section" aria-label="추천 상품">
+          {/* 좌측 세로 젠더 필터 버튼 (데스크톱에서만 노출) */}
+          <div className="hidden md:flex fixed left-4 top-1/2 -translate-y-1/2 z-30">
+            <div className="flex flex-col gap-2 rounded-full border border-[var(--divider)] bg-white/90 p-1 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-white/70">
+              {([
+                {key: 'all', label: '전체'},
+                {key: 'male', label: '남성'},
+                {key: 'female', label: '여성'},
+              ] as {key: GenderFilter; label: string}[]).map(({key, label}) => {
+                const active = gender === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setGender(key)}
+                    className={[
+                      'px-4 py-2 rounded-full text-sm font-medium transition-all duration-150 text-left',
+                      active ? 'bg-black text-white shadow-sm' : 'text-[var(--text-strong)] hover:bg-gray-100',
+                    ].join(' ')}
+                    title={`${label} 상품만 보기`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 검색 입력은 TopBar로 이동. TopBar에서 'semantic-search' 이벤트를 발생시킵니다. */}
+          <div style={{display:'none'}} />
+
           <div className="section-title">
-            <h2 className="section-title__heading">오늘의 인기 아이템</h2>
+            <h2 className="section-title__heading">오늘의 베스트 선택</h2>
           </div>
           {error && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-[#d6001c]">
@@ -394,6 +449,15 @@ export const ECommerceUI: React.FC<HomeProps> = ({ onNavigate }) => {
         onGoToFitting={handleGoToFitting}
         onClearAll={handleClearAll}
       />
+      {/* Floating chatbot widget */}
+      <SearchChatWidget
+        onApplyResults={(items, q) => {
+          if (q) setSearchQuery(q);
+          setGridItems(items);
+        }}
+      />
     </div>
   );
 };
+
+export default ECommerceUI;

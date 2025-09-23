@@ -95,7 +95,7 @@ export const RecommendationDisplay: React.FC<RecommendationDisplayProps> = ({
                     <p className="font-medium text-sm text-gray-900 line-clamp-2">{item.title}</p>
                     <p className="font-semibold text-primary-600">{formatPrice(item.price)}</p>
                     {item.score !== undefined && (
-                        <p className="text-xs text-gray-500">점수 {item.score}</p>
+                        <p className="text-xs text-gray-500"> 유사도 {(item.score * 100).toFixed(2)}%</p>
                     )}
                     <div className="pt-2 flex gap-2">
                         <Button size="sm" variant={liked ? 'secondary' : 'outline'} onClick={onToggleLike} aria-pressed={liked}>

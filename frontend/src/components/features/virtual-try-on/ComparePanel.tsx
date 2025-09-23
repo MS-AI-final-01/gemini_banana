@@ -81,7 +81,7 @@ export const ComparePanel: React.FC<{ basePerson?: UploadedImage | null }>
             <Button variant="outline" disabled={!aOut} onClick={() => shareOrDownloadResult('#compare-panel-a', aOut || undefined, 'compare-A.png')}>Share</Button>
           </div>
           <div className="bg-gray-50 rounded-lg border border-gray-200 min-h-[160px] flex items-center justify-center p-2">
-            {aLoading ? (<Spinner />) : (aOut ? (<img src={aOut} alt="A" className="max-h-64 object-contain" />) : (<span className="text-sm text-gray-500">A 결과 미생성</span>))}
+            {aLoading ? (<Spinner />) : (aOut ? (<img src={aOut} alt="A" className="max-h-64 object-contain" />) : (<span className="text-sm text-gray-500">A 결과가 아직 없습니다</span>))}
           </div>
         </div>
         {/* Panel B */}
@@ -97,7 +97,7 @@ export const ComparePanel: React.FC<{ basePerson?: UploadedImage | null }>
             <Button variant="outline" disabled={!bOut} onClick={() => shareOrDownloadResult('#compare-panel-b', bOut || undefined, 'compare-B.png')}>Share</Button>
           </div>
           <div className="bg-gray-50 rounded-lg border border-gray-200 min-h-[160px] flex items-center justify-center p-2">
-            {bLoading ? (<Spinner />) : (bOut ? (<img src={bOut} alt="B" className="max-h-64 object-contain" />) : (<span className="text-sm text-gray-500">B 결과 미생성</span>))}
+            {bLoading ? (<Spinner />) : (bOut ? (<img src={bOut} alt="B" className="max-h-64 object-contain" />) : (<span className="text-sm text-gray-500">B 결과가 아직 없습니다</span>))}
           </div>
         </div>
       </div>

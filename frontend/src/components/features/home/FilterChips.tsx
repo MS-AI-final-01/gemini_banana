@@ -1,16 +1,16 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 
 const chips = [
-  '러닝화',
-  '헤드보드',
-  '트레이닝',
-  '카핑',
-  '스토츠',
-  '액티브웜',
-  '로퍼',
-  '스니커즈',
-  '가멘트',
-  '라이프스타일'
+  '전체',
+  '미니멀',
+  '스트릿',
+  '스포츠',
+  '캐주얼',
+  '포멀',
+  '아웃도어',
+  '러닝',
+  '여름',
+  '겨울',
 ];
 
 export const FilterChips: React.FC = () => {
@@ -35,3 +35,4 @@ export const FilterChips: React.FC = () => {
 };
 
 export default FilterChips;
+

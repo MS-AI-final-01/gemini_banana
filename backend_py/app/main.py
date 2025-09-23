@@ -13,6 +13,7 @@ from .routes.proxy import router as proxy_router
 from .routes.tips import router as tips_router
 from .routes.tryon_video import router as tryon_video_router
 from .routes.evaluate import router as evaluate_router
+from .routes.search import router as search_router
 from fastapi.middleware.cors import CORSMiddleware
 from .middleware.logging import LoggingMiddleware
 
@@ -56,6 +57,7 @@ app.include_router(proxy_router)
 app.include_router(tips_router)
 app.include_router(evaluate_router)
 app.include_router(tryon_video_router)
+app.include_router(search_router)
 
 @app.get("/")
 def root():
