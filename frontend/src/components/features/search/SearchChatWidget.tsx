@@ -145,14 +145,24 @@ export const SearchChatWidget: React.FC<Props> = ({ onApplyResults }) => {
               width: 56,
               height: 56,
               borderRadius: 28,
-              background: '#111',
-              color: '#fff',
+              background: '#fff',
+              color: '#111',
               border: 'none',
               boxShadow: '0 8px 20px rgba(0,0,0,0.22)',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 0
             }}
           >
-            💬
+            <img
+              src={CHATBOT_ICON_SRC}
+              alt="챗봇 아이콘"
+              width={24}
+              height={24}
+              style={{ display: 'block' }}
+            />
           </button>
         </>
       )}
@@ -223,3 +233,4 @@ export const SearchChatWidget: React.FC<Props> = ({ onApplyResults }) => {
 };
 
 export default SearchChatWidget;
+const CHATBOT_ICON_SRC = '/icons/chatbot.png';
