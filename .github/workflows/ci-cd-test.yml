@@ -4,7 +4,7 @@ name: 🧪 Test Environment CI/CD Pipeline
 on:
   # 자동 트리거 (develop_deploy_pipeline 브랜치로 수정)
   push:
-    branches: [develop, add-redis]
+    branches: [develop]
     paths-ignore:
       - '**.md'
       - 'docs/**'
