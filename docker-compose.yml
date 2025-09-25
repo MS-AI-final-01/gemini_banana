@@ -1,6 +1,24 @@
 version: '3.8'
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: ai-virtual-try-on-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    command: redis-server --appendonly yes  # 데이터 지속성
+
   backend:
     build:
       context: ./backend_py
@@ -12,8 +30,15 @@ services:
       - NODE_ENV=production
       - PORT=3001
       - HOST=0.0.0.0
+      # Redis 연결 설정
+      - CACHE_ENABLED=true
+      - REDIS_URL=redis://redis:6379/0
+      - CACHE_DEFAULT_TTL=1800
     env_file:
       - ./backend_py/.env
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - app-network
     restart: unless-stopped
@@ -35,6 +60,10 @@ services:
     networks:
       - app-network
     restart: unless-stopped
+
+volumes:
+  redis_data:
+    driver: local
 
 networks:
   app-network:

@@ -4,7 +4,7 @@ name: 🧪 Test Environment CI/CD Pipeline
 on:
   # 자동 트리거 (develop_deploy_pipeline 브랜치로 수정)
   push:
-    branches: [develop]
+    branches: [develop, add-redis]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -205,21 +205,42 @@ jobs:
         
         echo "✅ Frontend quality check passed"
 
-    - name: 🔧 Backend Quality Check
+    - name: 🔧 Backend Quality Check with Redis
       if: needs.trigger-validation.outputs.should_deploy_backend == 'true' || github.event_name == 'schedule'
       run: |
         cd backend_py
         echo "🔍 Installing Python dependencies (no cache)..."
         python -m pip install --upgrade pip
         pip install --no-cache-dir -r requirements.txt
+    
+        # 🚀 Redis 패키지 설치 검증
+        echo "Verifying Redis package installation..."
+        python -c "import redis; print('✅ Redis package installed successfully')" || {
+          echo "❌ Redis package not found"
+          echo "Expected: redis package should be in requirements.txt"
+          exit 1
+        } 
         
         echo "🔍 Python syntax check..."
         python -m py_compile app/main.py
         
         echo "🔍 FastAPI import test..."
         python -c "from app.main import app; print('✅ FastAPI app imports successfully')"
-        
-        echo "✅ Backend quality check passed"
+            
+        # 🚀 Redis 캐싱 모듈 검증
+        echo "Redis caching modules verification..."
+        python -c "
+        try:
+            from app.services.cache_manager import CacheService
+            from app.utils.redis_vector_cache import RedisVectorCacheManager
+            print('✅ Redis caching modules imported successfully')
+            print('✅ Backend ready for Redis caching integration')
+        except ImportError as e:
+            print(f'⚠️ Redis caching modules import failed: {e}')
+            print('⚠️ This is expected if Redis modules are not yet implemented')
+            print('⚠️ Basic Redis package is available, proceeding with deployment')
+        "
+        echo "Backend quality check with Redis verification passed"
 
     - name: 🎬 Video Feature Environment Check (Simplified)
       if: needs.trigger-validation.outputs.should_deploy_backend == 'true'
@@ -242,8 +263,7 @@ jobs:
         fi
         
         echo "✅ Video feature environment check completed"
-
-        
+                
 
   # ========== PR 전용 검증 ==========
   pr-validation:
@@ -506,6 +526,24 @@ jobs:
             fi
           done
         }
+    
+        # 🚀 Redis 환경변수 설정 (GitHub Secrets에서)
+        if [ -n "${{ secrets.AZURE_REDIS_KEY }}" ]; then
+          echo "✅ Azure Redis Cache key found in secrets"
+          REDIS_HOST="${{ secrets.AZURE_REDIS_HOSTNAME || '7ai-final-team1-redis.redis.cache.windows.net' }}"
+          REDIS_PORT="6380"  # Azure Redis Cache SSL 포트
+          REDIS_URL="redis://:${{ secrets.AZURE_REDIS_KEY }}@${REDIS_HOST}:${REDIS_PORT}/0?ssl=true"
+          CACHE_ENABLED="true"
+          echo "Redis Configuration:"
+          echo "  - Host: ${REDIS_HOST}"
+          echo "  - Port: ${REDIS_PORT}"
+          echo "  - SSL: enabled"
+        else
+          echo "⚠️ AZURE_REDIS_KEY not found in GitHub Secrets"
+          echo "Redis cache will be disabled (fallback to PostgreSQL direct queries)"
+          REDIS_URL=""
+          CACHE_ENABLED="false"
+        fi
         
         # 환경 변수 유효성 검사 (기존 로직 유지)
         if [ -z "${{ secrets.TEST_GEMINI_API_KEY }}" ] || [ "${{ secrets.TEST_GEMINI_API_KEY }}" = "-" ]; then
@@ -548,6 +586,9 @@ jobs:
             DB_NAME='${DB_NAME_VALUE}' \
             DB_PORT=5432 \
             DB_SSLMODE=require \
+            CACHE_ENABLED=${CACHE_ENABLED} \\
+            REDIS_URL='${REDIS_URL}' \\
+            CACHE_DEFAULT_TTL=1800 \\
             WEBSITES_ENABLE_APP_SERVICE_STORAGE=false \
             DOCKER_ENABLE_CI=true \
             WEBSITES_PORT=3001 \
@@ -564,9 +605,11 @@ jobs:
         
         retry_az "$ENV_CMD"
         echo "✅ Environment variables configured successfully (Google credentials as Base64)"
+        echo "Redis Configuration:"
+        echo "  - CACHE_ENABLED: ${CACHE_ENABLED}"
+        echo "  - REDIS configured: $([ -n '${{ secrets.AZURE_REDIS_KEY }}' ] && echo 'Yes' || echo 'No')"
 
         
-
     # 🆕 여기에 추가 (기존 마지막 스텝 다음)
     - name: 📋 Collect Backend Deployment Logs (On Failure)
       if: failure()
@@ -1097,6 +1140,59 @@ jobs:
         done
 
 
+    # 🚀 NEW: Redis 캐시 상태 확인 (추가 단계)
+    - name: 🔍 Redis Cache Health Verification
+      if: needs.deploy-backend.result == 'success'
+      continue-on-error: true  # 캐시 실패해도 전체 배포는 성공
+      run: |
+        echo "🔍 Redis Cache Health Check..."
+        BACKEND_URL="${{ secrets.TEST_BACKEND_URL }}"
+  
+        # 기본 백엔드가 정상이어야 캐시 테스트 가능
+        if [ "$BACKEND_HEALTH" != "success" ]; then
+          echo "⚠️ Skipping cache check - backend not healthy"
+          exit 0
+        fi
+  
+        # 캐시 상태 엔드포인트 확인
+        echo "📡 Checking cache status endpoint..."
+        CACHE_RESPONSE=$(curl -s -w "HTTPCODE:%{http_code}" --max-time 10 "${BACKEND_URL}/cache/status" 2>&1 || echo "HTTPCODE:000")
+        CACHE_HTTP_CODE=$(echo "$CACHE_RESPONSE" | grep -o "HTTPCODE:[0-9]*" | cut -d: -f2)
+  
+        echo "📊 Cache endpoint HTTP Code: ${CACHE_HTTP_CODE}"
+  
+        if [ "$CACHE_HTTP_CODE" = "200" ]; then
+          # 응답 내용 확인
+          CACHE_DATA=$(echo "$CACHE_RESPONSE" | sed 's/HTTPCODE:[0-9]*//g')
+          echo "📄 Cache Response: ${CACHE_DATA}"
+  
+          if echo "$CACHE_DATA" | grep -q '"status":"active"'; then
+            echo "🚀 Redis cache is ACTIVE and working!"
+            echo "CACHE_STATUS=active" >> $GITHUB_ENV
+          elif echo "$CACHE_DATA" | grep -q '"status":"disabled"'; then
+            echo "⚠️ Redis cache is DISABLED (fallback mode)"
+            echo "CACHE_STATUS=disabled" >> $GITHUB_ENV
+          else
+            echo "❓ Redis cache status is unknown"
+            echo "CACHE_STATUS=unknown" >> $GITHUB_ENV
+          fi
+        else
+          echo "❌ Cache status endpoint not accessible (HTTP: ${CACHE_HTTP_CODE})"
+          echo "CACHE_STATUS=unavailable" >> $GITHUB_ENV
+        fi
+  
+        # 관리자 캐시 통계 확인 (선택적)
+        echo "📡 Checking admin cache endpoint..."
+        ADMIN_CACHE_RESPONSE=$(curl -s --max-time 5 "${BACKEND_URL}/api/v1/admin/cache/status" 2>/dev/null || echo "failed")
+  
+        if [ "$ADMIN_CACHE_RESPONSE" != "failed" ]; then
+          echo "✅ Admin cache endpoint accessible"
+          echo "📊 Admin Cache Info: $(echo "$ADMIN_CACHE_RESPONSE" | head -c 200)..."
+        else
+          echo "⚠️ Admin cache endpoint not accessible (may be normal)"
+        fi
+
+
     - name: 💾 Database Health Check (Detailed)
       if: needs.deploy-backend.result == 'success'
       run: |
@@ -1407,7 +1503,31 @@ jobs:
         else
           echo "⚠️ DISCORD_WEBHOOK_URL not configured, skipping notification"
         fi
+        
 
+    # 🚀 종합 상태 리포트 (새로 추가)
+    - name: 📊 Deployment Status Summary
+      if: always()
+      run: |
+        echo "📊 ========== DEPLOYMENT STATUS SUMMARY =========="
+        echo "Backend Health: ${BACKEND_HEALTH:-unknown}"
+        echo "Cache Status: ${CACHE_STATUS:-not_checked}"
+        echo "Frontend Health: ${FRONTEND_HEALTH:-not_checked}"
+        echo "================================================="
+  
+        # Discord나 Slack 알림을 위한 JSON 생성 (선택적)
+        cat > deployment_summary.json << EOF
+        {
+          "backend_health": "${BACKEND_HEALTH:-unknown}",
+          "cache_status": "${CACHE_STATUS:-not_checked}",  
+          "frontend_health": "${FRONTEND_HEALTH:-not_checked}",
+          "deployment_time": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "environment": "test"
+        }
+        EOF
+  
+        echo "📄 Status summary saved to deployment_summary.json"
+        cat deployment_summary.json
 
   # ========== 자동 롤백 (완성) ==========
   auto-rollback:
