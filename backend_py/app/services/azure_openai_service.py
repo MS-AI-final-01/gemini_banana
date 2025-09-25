@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Dict, List, Optional
+
 import httpx
 
 try:
@@ -50,7 +51,9 @@ class AzureOpenAIService:
         return (self.client is not None) or self._http_fallback
 
     # ----------------------------- public API ----------------------------- #
-    def analyze_style_from_images(self, person: Optional[Dict], clothing_items: Optional[Dict]) -> Dict:
+    def analyze_style_from_images(
+        self, person: Optional[Dict], clothing_items: Optional[Dict]
+    ) -> Dict:
         if not self.available():
             raise RuntimeError("Azure OpenAI is not configured")
 
@@ -65,7 +68,10 @@ class AzureOpenAIService:
             mime = file_obj.get("mimeType") or "image/jpeg"
             if not base64:
                 return None
-            return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64}", "detail": "high"}}
+            return {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{base64}", "detail": "high"},
+            }
 
         if person:
             part = to_image_part(person)
@@ -84,78 +90,124 @@ class AzureOpenAIService:
         """옷 아이템만 분석하여 설명을 추출합니다."""
         if not self.available():
             raise RuntimeError("Azure OpenAI is not configured")
-        
+
         content: List[Dict] = [
-            {"type": "text", "text": "이 옷의 스타일, 색상, 카테고리를 간단히 설명해주세요."},
+            {
+                "type": "text",
+                "text": """You are a meticulous fashion merchandiser and copywriter.
+Describe only the TARGET GARMENT from the product image in detailed prose. Do not mention people, faces, or bodies.
+
+Respond with valid minified JSON matching:
+{
+  "color": "<dominant color tone>",
+  "garment": "<short specific name>",
+  "styleTags": ["tag1", "tag2", "tag3"],
+  "description": "<3 sentences, 70-100 words total>"
+}
+
+Formatting requirements:
+- Use ASCII characters only.
+- Provide 1-3 styleTags. If unsure, return an empty array.
+- The description must contain exactly three sentences. Cover in order: (1) silhouette/fit & length, (2) material/handfeel & construction details, (3) styling use cases or seasonality. Hedge if uncertain.
+- Do not add commentary outside of JSON.
+""",
+            },
         ]
-        
+
         # 이미지 데이터 추가
         if image_data and image_data.get("base64"):
-            content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{image_data.get('mimeType', 'image/jpeg')};base64,{image_data['base64']}"
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{image_data.get('mimeType', 'image/jpeg')};base64,{image_data['base64']}"
+                    },
                 }
-            })
-        
+            )
+
         try:
             if self.client:
                 response = self.client.chat.completions.create(
                     model=self.deployment_id,
                     messages=[{"role": "user", "content": content}],
                     temperature=self.temperature,
-                    max_tokens=self.max_tokens
+                    max_tokens=self.max_tokens,
                 )
-                return response.choices[0].message.content or "옷 아이템"
+                return response.choices[0].message.content or "{}"
             else:
                 # HTTP fallback
                 return self._http_analyze_clothing(image_data)
         except Exception as e:
             print(f"❌ Azure OpenAI 옷 분석 실패: {e}")
-            return "옷 아이템"
-    
+            return "{}"
+
     def _http_analyze_clothing(self, image_data: Dict) -> str:
         """HTTP fallback for clothing analysis"""
         try:
             import httpx
+
             with httpx.Client() as client:
                 response = client.post(
                     f"{self.endpoint}/openai/deployments/{self.deployment_id}/chat/completions",
                     headers={
                         "api-key": self.api_key,
-                        "Content-Type": "application/json"
+                        "Content-Type": "application/json",
                     },
                     params={"api-version": self.api_version},
                     json={
-                        "messages": [{
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": "이 옷의 스타일, 색상, 카테고리를 간단히 설명해주세요."},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:{image_data.get('mimeType', 'image/jpeg')};base64,{image_data['base64']}"
-                                    }
-                                }
-                            ]
-                        }],
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": """You are a meticulous fashion merchandiser and copywriter.
+Describe only the TARGET GARMENT from the product image in detailed prose. Do not mention people, faces, or bodies.
+
+Respond with valid minified JSON matching:
+{
+  \"color\": \"<dominant color tone>\",
+  \"garment\": \"<short specific name>\",
+  \"styleTags\": [\"tag1\", \"tag2\", \"tag3\"],
+  \"description\": \"<3 sentences, 70-100 words total>\"
+}
+
+Formatting requirements:
+- Use ASCII characters only.
+- Provide 1-3 styleTags. If unsure, return an empty array.
+- The description must contain exactly three sentences. Cover in order: (1) silhouette/fit & length, (2) material/handfeel & construction details, (3) styling use cases or seasonality. Hedge if uncertain.
+- Do not add commentary outside of JSON.
+""",
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{image_data.get('mimeType', 'image/jpeg')};base64,{image_data['base64']}"
+                                        },
+                                    },
+                                ],
+                            }
+                        ],
                         "temperature": self.temperature,
-                        "max_tokens": self.max_tokens
-                    }
+                        "max_tokens": self.max_tokens,
+                    },
                 )
                 response.raise_for_status()
                 data = response.json()
-                return data["choices"][0]["message"]["content"] or "옷 아이템"
+                return data["choices"][0]["message"]["content"] or "{}"
         except Exception as e:
             print(f"❌ HTTP fallback 옷 분석 실패: {e}")
-            return "옷 아이템"
+            return "{}"
 
     def analyze_virtual_try_on(self, generated_image_data_uri: str) -> Dict:
         if not self.available():
             raise RuntimeError("Azure OpenAI is not configured")
         content: List[Dict] = [
             {"type": "text", "text": self._vto_prompt()},
-            {"type": "image_url", "image_url": {"url": generated_image_data_uri, "detail": "high"}},
+            {
+                "type": "image_url",
+                "image_url": {"url": generated_image_data_uri, "detail": "high"},
+            },
         ]
         return self._chat_to_json(content)
 
@@ -196,7 +248,7 @@ class AzureOpenAIService:
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                 )
-            except Exception as e:
+            except Exception:
                 # Retry without temperature if model rejects custom values
                 try:
                     resp = self.client.chat.completions.create(
@@ -227,37 +279,57 @@ class AzureOpenAIService:
             }
             with httpx.Client(timeout=30.0) as client:
                 try:
-                    r = client.post(url, params=params, headers=headers, json=payload_new)
+                    r = client.post(
+                        url, params=params, headers=headers, json=payload_new
+                    )
                     r.raise_for_status()
                 except httpx.HTTPStatusError as he:
                     body = he.response.text if he.response is not None else ""
-                    if "max_completion_tokens" in body and "unsupported" in body.lower():
+                    if (
+                        "max_completion_tokens" in body
+                        and "unsupported" in body.lower()
+                    ):
                         # Retry with legacy param
                         payload_old = {
                             "messages": [{"role": "user", "content": content}],
                             "temperature": self.temperature,
                             "max_tokens": self.max_tokens,
                         }
-                        r = client.post(url, params=params, headers=headers, json=payload_old)
+                        r = client.post(
+                            url, params=params, headers=headers, json=payload_old
+                        )
                         r.raise_for_status()
-                    elif "temperature" in body.lower() and "unsupported" in body.lower():
+                    elif (
+                        "temperature" in body.lower() and "unsupported" in body.lower()
+                    ):
                         # Retry without temperature
                         payload_no_temp = {
                             "messages": [{"role": "user", "content": content}],
                             "max_completion_tokens": self.max_tokens,
                         }
-                        r = client.post(url, params=params, headers=headers, json=payload_no_temp)
+                        r = client.post(
+                            url, params=params, headers=headers, json=payload_no_temp
+                        )
                         r.raise_for_status()
                     else:
                         raise
                 data = r.json()
-                text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+                text = (
+                    (data.get("choices") or [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
 
         json_str = self._extract_json(text)
         try:
             return json.loads(json_str)
         except Exception:
-            return {"detected_style": [], "colors": [], "categories": [], "style_preference": []}
+            return {
+                "detected_style": [],
+                "colors": [],
+                "categories": [],
+                "style_preference": [],
+            }
 
     @staticmethod
     def _extract_json(text: str) -> str:
@@ -265,9 +337,10 @@ class AzureOpenAIService:
             chunk = text.split("```json")[-1].split("```")[0]
             if chunk.strip().startswith("{"):
                 return chunk.strip()
-        start = text.find("{"); end = text.rfind("}")
+        start = text.find("{")
+        end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
-            return text[start:end+1]
+            return text[start : end + 1]
         return "{}"
 
     @staticmethod

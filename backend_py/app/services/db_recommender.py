@@ -1,34 +1,65 @@
+# db_recommender.py (boot-source logging + FAISS bytes/ndarray compat)
 from __future__ import annotations
 
 import logging
 import os
-import time
+import pickle
+import re
+import zlib
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Iterable
-from pathlib import Path
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-import re
+from dotenv import load_dotenv
 
-# Robust gender detectors (English word-boundary safe; Korean keyword safe)
-RE_UNISEX = re.compile(r"(?:\buni(?:sex)?\b|男女|공용|유니섹스|남녀|남여|공용/유니섹스|all\s*genders?)", re.I)
-RE_KIDS = re.compile(r"(?:\bkid(?:s)?\b|\bchild(?:ren)?\b|\byouth\b|\bjunior\b|boys?\s*&\s*girls?|아동|키즈)", re.I)
-RE_FEMALE = re.compile(r"(?:\bwomen\b|\bwoman\b|\bfemale\b|\bladies\b|\blady\b|\bgirls?\b|여성|여자|우먼)", re.I)
-RE_MALE = re.compile(r"(?:\bmen\b|\bman\b|\bmale\b|\bboys?\b|\bmens\b|\bman's\b|\bmans\b|남성|남자|맨)", re.I)
+load_dotenv()
 
 try:
-    import faiss
+    import redis  # type: ignore
+except Exception:
+    redis = None  # type: ignore
+
+try:
+    import faiss  # type: ignore
+except Exception:
+    faiss = None  # type: ignore
+
+try:
     from sqlalchemy import create_engine, text  # type: ignore
     from sqlalchemy.engine import Engine  # type: ignore
-except Exception:  # Optional dependency
-    faiss = None  # type: ignore
+except Exception:
     create_engine = None  # type: ignore
     text = None  # type: ignore
+
     class Engine:  # type: ignore
         pass
 
 
+# -----------------------------
+# Regex utils
+# -----------------------------
+RE_UNISEX = re.compile(
+    r"(?:\buni(?:sex)?\b|男女|공용|유니섹스|남녀|남여|공용/유니섹스|all\s*genders?)",
+    re.I,
+)
+RE_KIDS = re.compile(
+    r"(?:\bkid(?:s)?\b|\bchild(?:ren)?\b|\byouth\b|\bjunior\b|boys?\s*&\s*girls?|아동|키즈)",
+    re.I,
+)
+RE_FEMALE = re.compile(
+    r"(?:\bwomen\b|\bwoman\b|\bfemale\b|\bladies\b|\blady\b|\bgirls?\b|여성|여자|우먼)",
+    re.I,
+)
+RE_MALE = re.compile(
+    r"(?:\bmen\b|\bman\b|\bmale\b|\bboys?\b|\bmens\b|\bman's\b|\bmans\b|남성|남자|맨)",
+    re.I,
+)
+
+
+# -----------------------------
+# Configs
+# -----------------------------
 @dataclass
 class DbConfig:
     host: str = os.getenv("DB_HOST", "")
@@ -40,24 +71,102 @@ class DbConfig:
 
     @property
     def url(self) -> str:
-        # Allow hard-disable via env flag without editing DB_* vars
         flag = os.getenv("DB_RECO_ENABLED", "").strip().lower()
-        # Default remains enabled when flag is unset; only explicit false/0/off disables
         if flag in {"0", "false", "off", "no"}:
             return ""
         if not (self.host and self.user):
             return ""
-        return (
-            f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}?sslmode={self.sslmode}"
-        )
+        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}?sslmode={self.sslmode}"
+
+
+@dataclass
+class RedisConfig:
+    host: str = os.getenv("REDIS_HOST", "localhost")
+    port: int = int(os.getenv("REDIS_PORT", "6379"))
+    password: str = os.getenv("REDIS_PASSWORD", "")
+    db: int = int(os.getenv("REDIS_DB", "0"))
+    ssl: bool = os.getenv("REDIS_SSL", "false").lower() == "true"
+
+    @property
+    def url(self) -> str:
+        scheme = "rediss" if self.ssl else "redis"
+        auth = f":{self.password}@" if self.password else ""
+        return f"{scheme}://{auth}{self.host}:{self.port}/{self.db}"
+
+
+# -----------------------------
+# Redis helpers
+# -----------------------------
+REDIS_KEYS = {
+    "dense": "embeddings:dense_vectors",
+    "colbert": "embeddings:colbert_data",
+    "faiss": "embeddings:faiss_index",
+    "meta": "embeddings:metadata",
+    "colbert_loaded": "embeddings:colbert_loaded",
+    "colbert_dim": "embeddings:colbert_dim",
+}
+REDIS_CHUNK_BYTES = int(os.getenv("REDIS_CHUNK_BYTES", str(8 * 1024 * 1024)))  # 8MB
+REDIS_ENABLED = os.getenv("RECO_USE_REDIS", "true").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+
+def _r_set_large(r, base_key: str, raw: bytes, *, compress=True) -> None:
+    if compress:
+        raw = zlib.compress(raw, level=3)
+    n = len(raw)
+    parts = (n + REDIS_CHUNK_BYTES - 1) // REDIS_CHUNK_BYTES
+    pipe = r.pipeline()
+    pipe.delete(base_key + ":parts")
+    for i in range(parts):
+        seg = raw[i * REDIS_CHUNK_BYTES : (i + 1) * REDIS_CHUNK_BYTES]
+        pipe.set(f"{base_key}:part:{i}", seg)
+    pipe.set(base_key + ":parts", str(parts).encode())
+    pipe.execute()
+
+
+def _r_get_large(r, base_key: str, *, decompress=True) -> Optional[bytes]:
+    parts_b = r.get(base_key + ":parts")
+    if not parts_b:
+        return None
+    parts = int(parts_b.decode())
+    pipe = r.pipeline()
+    for i in range(parts):
+        pipe.get(f"{base_key}:part:{i}")
+    blobs = pipe.execute()
+    if any(b is None for b in blobs):
+        return None
+    data = b"".join(blobs)
+    if decompress:
+        data = zlib.decompress(data)
+    return data
+
+
+def purge_redis_embeddings(r) -> None:
+    ks = [
+        REDIS_KEYS[k]
+        for k in ("dense", "colbert", "faiss", "meta", "colbert_loaded", "colbert_dim")
+    ]
+    part_keys = []
+    for k in ks:
+        part_keys.append(k + ":parts")
+        for i in range(0, 4096):  # up to 4096 chunks safety
+            part_keys.append(f"{k}:part:{i}")
+    r.delete(*ks, *part_keys)
+
+
+# -----------------------------
+# Normalizers
+# -----------------------------
 
 
 def _normalize_slot(raw: Optional[str]) -> str:
-    c = (str(raw or "").strip().lower())
+    c = str(raw or "").strip().lower()
     if not c:
         return "unknown"
-    
-    # DB 카테고리 매핑만 사용
     if c in ["man_outer", "woman_outer"]:
         return "outer"
     elif c in ["man_top", "woman_top"]:
@@ -67,9 +176,7 @@ def _normalize_slot(raw: Optional[str]) -> str:
     elif c in ["man_shoes", "woman_shoes"]:
         return "shoes"
     elif c == "woman_dress_skirt":
-        return "pants"  # 드레스/스커트는 하의로 분류
-    
-    # 알 수 없는 카테고리는 그대로 반환
+        return "pants"
     return c
 
 
@@ -77,16 +184,11 @@ def _normalize_gender(raw: Optional[str]) -> str:
     g = str(raw or "").strip()
     if not g:
         return "unknown"
-    # 언더스코어/대시/슬래시 등을 공백으로 치환해 단어 경계 인식 강화
-    g = re.sub(r"[_\-\/]+", " ", g)
-
-    # 공용/키즈 우선 판정
+    g = re.sub(r"[_\-/]+", " ", g)
     if RE_UNISEX.search(g):
         return "unisex"
     if RE_KIDS.search(g):
         return "kids"
-
-    # 단어 경계 사용으로 'women' 안의 'men' 오탐 방지
     female = bool(RE_FEMALE.search(g))
     male = bool(RE_MALE.search(g))
     if female and male:
@@ -99,101 +201,388 @@ def _normalize_gender(raw: Optional[str]) -> str:
 
 
 def _parse_price(price_raw: Optional[str]) -> int:
-    """가격 문자열을 정수로 안전하게 파싱"""
     if not price_raw:
         return 0
-    
-    # 문자열로 변환
-    price_str = str(price_raw).strip()
-    
-    # 숫자가 아닌 문자 제거 (쉼표, 원, 공백 등)
-    price_clean = re.sub(r"[^0-9]", "", price_str)
-    
-    # 숫자가 없으면 0 반환
-    if not price_clean:
+    s = re.sub(r"[^0-9]", "", str(price_raw).strip())
+    if not s:
         return 0
-    
     try:
-        return int(price_clean)
+        return int(s)
     except ValueError:
         return 0
 
 
+# -----------------------------
+# IndexOnlyRecommender
+# -----------------------------
 class IndexOnlyRecommender:
     """
-    DB 기반 하이브리드 추천 시스템 (BGE-M3 + ColBERT MaxSim)
-    - Dense: DB에서 로드한 BGE-M3 dense 벡터 → FAISS (IP)
-    - Rerank: DB에서 로드한 ColBERT 벡터로 MaxSim 계산
-    - 최종 점수 = w_dense * Dense + w_maxsim * MaxSim (후보 집합 내 min-max 정규화 후 결합)
-    - DB에서 벡터화된 데이터를 로드하여 메모리에 캐싱 (FlagEmbedding 모델 불필요)
+    DB 기반 하이브리드 추천 (Dense + ColBERT) with Redis cache
+    - Redis 로드 실패/부분로딩 시 → DB 로드 (검증 OK일 때만 Redis 저장)
     """
 
     def __init__(
         self,
         cfg: Optional[DbConfig] = None,
         w_dense: float = 0.5,
-        w_maxsim: float = 0.5
+        w_maxsim: float = 0.5,
     ):
         self.logger = logging.getLogger(__name__)
         self.cfg = cfg or DbConfig()
         self.w_dense = w_dense
         self.w_maxsim = w_maxsim
-        
-        # DB 연결
-        self.engine: Optional[Engine] = None
-        
-        # 데이터 저장소
-        self.dense_index = None
-        self.metadata = None
-        self.dense_vectors = None
-        self.colbert_data = {}
-        self.colbert_loaded = False
-        self.colbert_dim = None
-        self.colbert_cache = {}
-        self.cache_limit = 1000
-        
-        # DB 연결 및 초기화
-        if self.cfg.url and create_engine is not None and text is not None:
-            try:
-                self.engine = create_engine(
-                    self.cfg.url,
-                    pool_pre_ping=True,
-                    connect_args={
-                        "keepalives": 1,
-                        "keepalives_idle": 30,
-                        "keepalives_interval": 10,
-                        "keepalives_count": 5,
-                        "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
-                    },
-                )
-                with self.engine.connect() as conn:
-                    conn.execute(text("SELECT 1"))
-                self.logger.info("[IndexOnlyRecommender] DB 연결 성공")
-                self._load_all()
-            except Exception as exc:
-                self.logger.exception("[IndexOnlyRecommender] 초기화 실패: %s", exc)
-                self.engine = None
 
-    def _load_all(self) -> None:
-        """DB에서 모든 데이터 로드"""
+        # Handles
+        self.engine: Optional[Engine] = None
+        self.redis_client = None
+        self.redis_available = False
+
+        # Data
+        self.dense_index = None  # FAISS
+        self.metadata: Optional[pd.DataFrame] = None
+        self.dense_vectors: Optional[np.ndarray] = None
+        self.colbert_data: Dict[int, Dict[str, np.ndarray]] = {}
+        self.colbert_loaded = False
+        self.colbert_dim: Optional[int] = None
+        self.colbert_cache: Dict[int, np.ndarray] = {}
+        self.cache_limit = 1000
+
+        # Boot-source tracking
+        self.boot_source = "unknown"
+
+        # Init
+        self._init_redis()
+        self._init_db_and_load()
+
+    # ---------- init ----------
+    def _init_redis(self):
+        if not REDIS_ENABLED or redis is None:
+            self.logger.info("[Reco] Redis disabled or not installed")
+            return
         try:
+            rcfg = RedisConfig()
+            params = {}
+            if rcfg.ssl:
+                params.update({"ssl_cert_reqs": None, "ssl_check_hostname": False})
+            self.redis_client = redis.from_url(rcfg.url, decode_responses=False, **params)  # type: ignore
+            self.redis_client.ping()  # type: ignore
+            self.redis_available = True
+            self.logger.info(f"[Reco] Redis connected: {rcfg.url}")
+        except Exception as e:
+            self.logger.warning(f"[Reco] Redis connect failed: {e}")
+            self.redis_available = False
+            self.redis_client = None
+
+    def _init_db_and_load(self):
+        if not (self.cfg.url and create_engine is not None and text is not None):
+            self.logger.warning("[Reco] DB URL not provided or SQLAlchemy missing")
+            return
+        try:
+            self.engine = create_engine(
+                self.cfg.url,
+                pool_pre_ping=True,
+                connect_args={
+                    "keepalives": 1,
+                    "keepalives_idle": 30,
+                    "keepalives_interval": 10,
+                    "keepalives_count": 5,
+                    "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
+                },
+            )
+            with self.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            self.logger.info("[Reco] DB connected")
+            self._load_all()
+        except Exception as exc:
+            self.logger.exception(f"[Reco] DB init failed: {exc}")
+            self.engine = None
+
+    # ---------- load pipeline ----------
+    def _load_all(self) -> None:
+        try:
+            # 1) Try Redis
+            if self._load_from_redis():
+                self.boot_source = "redis"
+                self.logger.info(
+                    "[Reco] BOOT_SOURCE=redis (loaded everything from Redis)"
+                )
+                try:
+                    if self.redis_available and self.redis_client:
+                        self.redis_client.set(
+                            "embeddings:boot_source", b"redis", ex=3600
+                        )
+                except Exception:
+                    pass
+                return
+
+            # 2) Load from DB
+            self.logger.info("[Reco] Redis miss → loading from DB…")
             self._load_products_from_db()
             self._load_embeddings_from_db()
             self._build_faiss_index()
             self._build_colbert_index()
-            self.logger.info("[IndexOnlyRecommender] DB에서 모든 데이터 로드 완료")
+
+            # 3) Validate before saving to Redis
+            if self._is_data_consistent():
+                if self.redis_available:
+                    self._save_to_redis()
+                    self.boot_source = "db->redis"
+                    self.logger.info(
+                        "[Reco] BOOT_SOURCE=db->redis (loaded from DB, saved to Redis)"
+                    )
+                    try:
+                        if self.redis_client:
+                            self.redis_client.set(
+                                "embeddings:boot_source", b"db->redis", ex=3600
+                            )
+                    except Exception:
+                        pass
+                else:
+                    self.boot_source = "db"
+                    self.logger.info(
+                        "[Reco] BOOT_SOURCE=db (loaded from DB, Redis disabled)"
+                    )
+            else:
+                self.boot_source = "db_inconsistent"
+                self.logger.warning(
+                    "[Reco] BOOT_SOURCE=db_inconsistent (loaded from DB but inconsistent; skipped Redis save)"
+                )
         except Exception as e:
-            self.logger.error(f"[IndexOnlyRecommender] DB 데이터 로드 실패: {e}")
+            self.boot_source = "error"
+            self.logger.error(f"[Reco] BOOT_SOURCE=error (load failed): {e}")
             raise
 
+    def _is_data_consistent(self) -> bool:
+        try:
+            n_meta = (
+                len(self.metadata) if isinstance(self.metadata, pd.DataFrame) else 0
+            )
+            n_dense = (
+                int(self.dense_vectors.shape[0])
+                if isinstance(self.dense_vectors, np.ndarray)
+                and self.dense_vectors.ndim == 2
+                else 0
+            )
+            n_faiss = (
+                int(getattr(self.dense_index, "ntotal", 0))
+                if self.dense_index is not None
+                else 0
+            )
+
+            if not (n_meta and n_dense and n_faiss):
+                self.logger.warning(
+                    f"[Reco] Consistency fail (non-positive): meta={n_meta}, dense={n_dense}, faiss={n_faiss}"
+                )
+                return False
+            if not (n_meta == n_dense == n_faiss):
+                self.logger.warning(
+                    f"[Reco] Count mismatch: meta={n_meta}, dense={n_dense}, faiss={n_faiss}"
+                )
+                return False
+            return True
+        except Exception as e:
+            self.logger.warning(f"[Reco] Consistency check error: {e}")
+            return False
+
+    # ---------- Redis I/O ----------
+    def _load_from_redis(self) -> bool:
+        if not self.redis_available or self.redis_client is None:
+            return False
+        try:
+            dense_b = _r_get_large(self.redis_client, REDIS_KEYS["dense"])
+            cdata_b = _r_get_large(self.redis_client, REDIS_KEYS["colbert"])
+            faiss_b = _r_get_large(self.redis_client, REDIS_KEYS["faiss"])
+            meta_b = _r_get_large(self.redis_client, REDIS_KEYS["meta"])
+
+            if not all([dense_b, cdata_b, faiss_b, meta_b]):
+                self.logger.info("[Reco] Redis missing some parts → fallback DB")
+                return False
+
+            # 1) dense vectors
+            try:
+                self.dense_vectors = pickle.loads(dense_b)
+                if (
+                    not isinstance(self.dense_vectors, np.ndarray)
+                    or self.dense_vectors.ndim != 2
+                ):
+                    raise TypeError(
+                        "Dense vectors invalid type or shape after unpickling"
+                    )
+            except Exception as e:
+                self.logger.warning(f"[Reco] Failed to unpickle dense vectors: {e}")
+                return False
+
+            # 2) ColBERT
+            try:
+                self.colbert_data = pickle.loads(cdata_b)
+                if not isinstance(self.colbert_data, dict):
+                    raise TypeError("Colbert data invalid type after unpickling")
+            except Exception as e:
+                self.logger.warning(f"[Reco] Failed to unpickle colbert data: {e}")
+                return False
+
+            # 3) FAISS
+            try:
+                if faiss is None:
+                    raise RuntimeError("FAISS not available")
+                if not isinstance(faiss_b, (bytes, bytearray, memoryview, np.ndarray)):
+                    raise ValueError(f"Invalid FAISS buffer type: {type(faiss_b)}")
+                buf_for_load = (
+                    np.frombuffer(faiss_b, dtype=np.uint8)
+                    if isinstance(faiss_b, (bytes, bytearray, memoryview))
+                    else faiss_b
+                )
+                self.dense_index = faiss.deserialize_index(buf_for_load)
+                if self.dense_index is None:
+                    raise ValueError("FAISS index is None after deserialization")
+                ntotal = getattr(self.dense_index, "ntotal", 0)
+                if ntotal <= 0:
+                    raise ValueError(f"FAISS index invalid ntotal: {ntotal}")
+                if (
+                    self.dense_vectors is not None
+                    and ntotal != self.dense_vectors.shape[0]
+                ):
+                    raise ValueError(
+                        f"FAISS ntotal ({ntotal}) != dense_vectors rows ({self.dense_vectors.shape[0]})"
+                    )
+            except Exception as e:
+                self.logger.warning(f"[Reco] Failed to deserialize FAISS index: {e}")
+                try:
+                    self.logger.info("[Reco] Purging corrupted Redis cache...")
+                    purge_redis_embeddings(self.redis_client)
+                except Exception as purge_e:
+                    self.logger.warning(f"[Reco] Failed to purge Redis: {purge_e}")
+                return False
+
+            # 4) metadata
+            try:
+                self.metadata = pickle.loads(meta_b)
+                if not isinstance(self.metadata, pd.DataFrame):
+                    raise TypeError("Metadata invalid type after unpickling")
+            except Exception as e:
+                self.logger.warning(f"[Reco] Failed to unpickle metadata: {e}")
+                return False
+
+            # flags
+            cl = self.redis_client.get(REDIS_KEYS["colbert_loaded"]) or None
+            if cl:
+                self.colbert_loaded = pickle.loads(cl)
+            cd = self.redis_client.get(REDIS_KEYS["colbert_dim"]) or None
+            if cd:
+                self.colbert_dim = pickle.loads(cd)
+
+            if not self._is_data_consistent():
+                self.logger.warning("[Reco] Redis data inconsistent → reject & purge")
+                try:
+                    purge_redis_embeddings(self.redis_client)
+                except Exception as purge_e:
+                    self.logger.warning(f"[Reco] Failed to purge Redis: {purge_e}")
+                return False
+
+            self.logger.info("[Reco] Redis load OK")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"[Reco] Final Redis load failed: {e}")
+            if self.redis_available and self.redis_client is not None:
+                try:
+                    self.logger.info(
+                        "[Reco] Purging Redis cache due to load failure..."
+                    )
+                    purge_redis_embeddings(self.redis_client)
+                except Exception as purge_e:
+                    self.logger.warning(f"[Reco] Failed to purge Redis: {purge_e}")
+            return False
+
+    def _save_to_redis(self) -> None:
+        if not self.redis_available or self.redis_client is None:
+            return
+        try:
+            if not self._is_data_consistent():
+                self.logger.warning("[Reco] Skip Redis save due to inconsistent data")
+                return
+
+            # dense
+            if isinstance(self.dense_vectors, np.ndarray):
+                _r_set_large(
+                    self.redis_client,
+                    REDIS_KEYS["dense"],
+                    pickle.dumps(self.dense_vectors, protocol=pickle.HIGHEST_PROTOCOL),
+                )
+
+            # colbert
+            if isinstance(self.colbert_data, dict) and self.colbert_data:
+                _r_set_large(
+                    self.redis_client,
+                    REDIS_KEYS["colbert"],
+                    pickle.dumps(self.colbert_data, protocol=pickle.HIGHEST_PROTOCOL),
+                )
+
+            # faiss
+            if self.dense_index is not None and faiss is not None:
+                try:
+                    buf = faiss.serialize_index(self.dense_index)
+                    if isinstance(buf, np.ndarray):
+                        if buf.dtype != np.uint8:
+                            raise ValueError(f"Invalid FAISS buffer dtype: {buf.dtype}")
+                        faiss_bytes = buf.tobytes()
+                    elif isinstance(buf, (bytes, bytearray, memoryview)):
+                        faiss_bytes = bytes(buf)
+                    else:
+                        raise ValueError(
+                            f"Invalid FAISS serialization result type: {type(buf)}"
+                        )
+                    if len(faiss_bytes) < 100:
+                        raise ValueError(
+                            f"Invalid FAISS serialization length: {len(faiss_bytes)}"
+                        )
+                    # verify
+                    buf_for_verify = (
+                        np.frombuffer(faiss_bytes, dtype=np.uint8)
+                        if isinstance(faiss_bytes, (bytes, bytearray, memoryview))
+                        else faiss_bytes
+                    )
+                    test_index = faiss.deserialize_index(buf_for_verify)
+                    if getattr(test_index, "ntotal", 0) != getattr(
+                        self.dense_index, "ntotal", 0
+                    ):
+                        raise ValueError("FAISS serialization verification failed")
+                    _r_set_large(self.redis_client, REDIS_KEYS["faiss"], faiss_bytes)
+                    self.logger.info(
+                        f"[Reco] FAISS index saved to Redis (size: {len(faiss_bytes):,} bytes)"
+                    )
+                except Exception as e:
+                    self.logger.error(f"[Reco] FAISS save failed: {e}")
+
+            # metadata
+            if isinstance(self.metadata, pd.DataFrame):
+                _r_set_large(
+                    self.redis_client,
+                    REDIS_KEYS["meta"],
+                    pickle.dumps(self.metadata, protocol=pickle.HIGHEST_PROTOCOL),
+                )
+
+            # flags
+            self.redis_client.set(
+                REDIS_KEYS["colbert_loaded"], pickle.dumps(self.colbert_loaded)
+            )
+            self.redis_client.set(
+                REDIS_KEYS["colbert_dim"], pickle.dumps(self.colbert_dim)
+            )
+
+            self.logger.info("[Reco] Saved to Redis (chunked)")
+        except Exception as e:
+            self.logger.error(f"[Reco] Redis save failed: {e}")
+
+    # ---------- DB loaders ----------
     def _load_products_from_db(self) -> None:
-        """DB에서 상품 메타데이터 로드"""
         assert self.engine is not None and text is not None
-        
         with self.engine.begin() as conn:
-            rows = conn.execute(
-                text(
-                    """
+            rows = (
+                (
+                    conn.execute(
+                        text(
+                            """
                     SELECT pos,
                            "Product_U",
                            "Product_img_U",
@@ -207,32 +596,33 @@ class IndexOnlyRecommender:
                     FROM public.products2
                     ORDER BY pos ASC
                     """
+                        )
+                    )
                 )
-            ).mappings().all()
-        
-        # pandas DataFrame으로 변환
+                .mappings()
+                .all()
+            )
         data = []
         for r in rows:
-            data.append({
-                "pos": int(r.get("pos")),
-                "Product_U": r.get("Product_U"),
-                "Product_img_U": r.get("Product_img_U"),
-                "Product_N": r.get("Product_N"),
-                "Product_Desc": r.get("Product_Desc"),
-                "Product_P": _parse_price(r.get("Product_P")),
-                "Category": r.get("Category"),
-                "Product_B": r.get("Product_B"),
-                "Product_G": r.get("Product_G"),
-                "Image_P": r.get("Image_P")
-            })
-        
+            data.append(
+                {
+                    "pos": int(r.get("pos")),
+                    "Product_U": r.get("Product_U"),
+                    "Product_img_U": r.get("Product_img_U"),
+                    "Product_N": r.get("Product_N"),
+                    "Product_Desc": r.get("Product_Desc"),
+                    "Product_P": _parse_price(r.get("Product_P")),
+                    "Category": r.get("Category"),
+                    "Product_B": r.get("Product_B"),
+                    "Product_G": r.get("Product_G"),
+                    "Image_P": r.get("Image_P"),
+                }
+            )
         self.metadata = pd.DataFrame(data)
-        self.logger.info(f"[IndexOnlyRecommender] 상품 메타데이터 로드: {len(self.metadata):,}개 상품")
+        self.logger.info(f"[Reco] products2 loaded: {len(self.metadata):,} rows")
 
     def _load_embeddings_from_db(self) -> None:
-        """DB에서 embeddings2의 모든 데이터 로드"""
         assert self.engine is not None and text is not None
-        
         with self.engine.begin() as conn:
             data = conn.execute(
                 text(
@@ -241,137 +631,107 @@ class IndexOnlyRecommender:
                     FROM public.embeddings2
                     WHERE dense IS NOT NULL
                     ORDER BY pos ASC
-                    """
+                """
                 )
             ).all()
-        
         if not data:
-            self.logger.error("[IndexOnlyRecommender] No embeddings2 data found")
+            self.logger.error("[Reco] embeddings2 empty")
             return
-        
-        # Dense 벡터들 추출
-        dense_vectors = []
-        colbert_vecs_list = []
-        colbert_offsets_list = []
-        
-        for row in data:
-            pos, dense_bytes, colbert_vecs_bytes, colbert_offsets_bytes = row
-            
-            # Dense 벡터
+
+        dense_list: List[np.ndarray] = []
+        colbert_vecs_list: List[Optional[np.ndarray]] = []
+        colbert_offsets_list: List[Optional[np.ndarray]] = []
+
+        for pos, dense_bytes, colbert_vecs_bytes, colbert_offsets_bytes in data:
             if dense_bytes:
                 dense_vec = np.frombuffer(dense_bytes, dtype=np.float32)
-                dense_vectors.append(dense_vec)
+                dense_list.append(dense_vec)
             else:
-                dense_vectors.append(None)
-            
-            # ColBERT 벡터들
+                dense_list.append(None)  # type: ignore
+
             if colbert_vecs_bytes:
-                colbert_vecs_1d = np.frombuffer(colbert_vecs_bytes, dtype=np.float32)
-                # 1차원을 2차원으로 reshape (토큰 수 x 차원)
-                # DB에 저장된 형태에 따라 적절히 reshape
-                if len(colbert_vecs_1d) > 0:
-                    # 일반적으로 ColBERT는 80토큰 x 1024차원 형태
-                    # 80 * 1024 = 81920이므로 이를 기준으로 reshape 시도
-                    if len(colbert_vecs_1d) % 1024 == 0:
-                        num_tokens = len(colbert_vecs_1d) // 1024
-                        colbert_vecs = colbert_vecs_1d.reshape(num_tokens, 1024)
-                    else:
-                        # 1024로 나누어떨어지지 않으면 1차원 그대로 사용
-                        colbert_vecs = colbert_vecs_1d.reshape(-1, 1)
-                    colbert_vecs_list.append(colbert_vecs)
+                v1d = np.frombuffer(colbert_vecs_bytes, dtype=np.float32)
+                if len(v1d) > 0 and len(v1d) % 1024 == 0:
+                    num_tok = len(v1d) // 1024
+                    v = v1d.reshape(num_tok, 1024)
                 else:
-                    colbert_vecs_list.append(None)
+                    v = v1d.reshape(-1, 1) if len(v1d) > 0 else None
+                colbert_vecs_list.append(v)
             else:
                 colbert_vecs_list.append(None)
-            
-            # ColBERT 오프셋
+
             if colbert_offsets_bytes:
-                offsets = np.frombuffer(colbert_offsets_bytes, dtype=np.int64)
-                colbert_offsets_list.append(offsets)
+                offs = np.frombuffer(colbert_offsets_bytes, dtype=np.int64)
+                colbert_offsets_list.append(offs)
             else:
                 colbert_offsets_list.append(None)
-        
-        # Dense 벡터들을 numpy 배열로 변환
-        valid_dense = [v for v in dense_vectors if v is not None]
+
+        valid_dense = [v for v in dense_list if isinstance(v, np.ndarray)]
         if valid_dense:
-            self.dense_vectors = np.vstack(valid_dense)
-            self.logger.info(f"[IndexOnlyRecommender] Dense 벡터 로드: {self.dense_vectors.shape}")
+            self.dense_vectors = np.vstack(valid_dense).astype(np.float32, copy=False)
+            self.logger.info(f"[Reco] Dense loaded: {self.dense_vectors.shape}")
         else:
             self.dense_vectors = None
-            self.logger.warning("[IndexOnlyRecommender] No valid dense vectors found")
-        
-        # ColBERT 데이터를 상품별로 저장 (개별 접근을 위해)
-        self.colbert_data = {}
-        for i, (vecs, offsets) in enumerate(zip(colbert_vecs_list, colbert_offsets_list)):
-            if vecs is not None and offsets is not None and len(offsets) >= 2:
-                # 각 상품의 ColBERT 벡터들을 저장
-                self.colbert_data[i] = {
-                    'vecs': vecs,
-                    'start_offset': int(offsets[0]),
-                    'end_offset': int(offsets[1])
-                }
-        
-        self.logger.info(f"[IndexOnlyRecommender] ColBERT 데이터 로드: {len(self.colbert_data)}개 상품")
-        
-        # 디버깅: 첫 번째 벡터의 shape 확인
-        if self.colbert_data:
-            first_key = next(iter(self.colbert_data.keys()))
-            first_vecs = self.colbert_data[first_key]['vecs']
-            self.logger.info(f"[DEBUG] 첫 번째 ColBERT 벡터 shape: {first_vecs.shape}, dtype: {first_vecs.dtype}")
-            
-            # ColBERT 벡터 통계
-            total_tokens = sum(len(data['vecs']) for data in self.colbert_data.values())
-            self.logger.info(f"[DEBUG] ColBERT 총 토큰 수: {total_tokens}, 상품 수: {len(self.colbert_data)}")
+            self.logger.warning("[Reco] No valid dense vectors")
 
+        self.colbert_data = {}
+        for i, (vecs, offs) in enumerate(zip(colbert_vecs_list, colbert_offsets_list)):
+            if (
+                isinstance(vecs, np.ndarray)
+                and isinstance(offs, np.ndarray)
+                and len(offs) >= 2
+            ):
+                self.colbert_data[i] = {
+                    "vecs": vecs,
+                    "start_offset": int(offs[0]),
+                    "end_offset": int(offs[1]),
+                }
+        self.colbert_loaded = bool(self.colbert_data)
+        if self.colbert_loaded:
+            first_key = next(iter(self.colbert_data))
+            fv = self.colbert_data[first_key]["vecs"]
+            self.colbert_dim = int(fv.shape[1]) if fv.ndim == 2 else int(fv.shape[0])
+        self.logger.info(
+            f"[Reco] ColBERT loaded: items={len(self.colbert_data)}, d={self.colbert_dim}"
+        )
 
     def _build_faiss_index(self) -> None:
-        """Dense 벡터들로 FAISS 인덱스 구축"""
         if self.dense_vectors is None:
-            self.logger.error("[IndexOnlyRecommender] Dense vectors not loaded")
+            self.logger.error("[Reco] No dense vectors to build FAISS")
             return
-        
-        # FAISS 인덱스 생성 (Inner Product)
-        dimension = self.dense_vectors.shape[1]
-        self.dense_index = faiss.IndexFlatIP(dimension)
-        
-        # 벡터들을 인덱스에 추가
-        self.dense_index.add(self.dense_vectors.astype(np.float32))
-        
-        self.logger.info(f"[IndexOnlyRecommender] FAISS 인덱스 구축: {self.dense_index.ntotal:,}개 벡터, d={dimension}")
+        if faiss is None:
+            self.logger.error("[Reco] faiss not installed")
+            return
+        d = int(self.dense_vectors.shape[1])
+        index = faiss.IndexFlatIP(d)  # type: ignore
+        index.add(self.dense_vectors.astype(np.float32))  # type: ignore
+        self.dense_index = index
+        self.logger.info(
+            f"[Reco] FAISS built: n={getattr(self.dense_index,'ntotal',0):,}, d={d}"
+        )
 
     def _build_colbert_index(self) -> None:
-        """ColBERT 인덱스 구축 (DB 기반)"""
-        if not hasattr(self, 'colbert_data') or not self.colbert_data:
-            self.logger.warning("[IndexOnlyRecommender] ColBERT 데이터가 없어서 인덱스를 구축할 수 없습니다")
-            return
-        
-        # 첫 번째 유효한 벡터에서 차원 확인
-        first_vecs = next(iter(self.colbert_data.values()))['vecs']
-        
-        # 벡터 차원 안전하게 확인
-        if first_vecs.ndim < 2:
-            self.logger.warning("[IndexOnlyRecommender] ColBERT 벡터가 2차원이 아닙니다. shape: %s", first_vecs.shape)
+        if not self.colbert_data:
+            self.logger.warning("[Reco] No ColBERT data; skip")
             self.colbert_loaded = False
             return
-        
-        self.colbert_dim = first_vecs.shape[1]
-        
         self.colbert_loaded = True
         self.colbert_cache = {}
         self.cache_limit = 1000
-        
-        self.logger.info(f"[IndexOnlyRecommender] ColBERT 인덱스: {len(self.colbert_data)}개 상품 (d={self.colbert_dim})")
-
-    def available(self) -> bool:
-        """추천 시스템 사용 가능 여부"""
-        return (
-            self.engine is not None and
-            self.dense_index is not None and 
-            self.metadata is not None
+        self.logger.info(
+            f"[Reco] ColBERT ready: items={len(self.colbert_data)}, d={self.colbert_dim}"
         )
 
-    def _minmax(self, x: np.ndarray) -> np.ndarray:
-        """Min-max 정규화"""
+    # ---------- helpers ----------
+    def available(self) -> bool:
+        return (
+            self.engine is not None
+            and self.dense_index is not None
+            and self.metadata is not None
+        )
+
+    @staticmethod
+    def _minmax(x: np.ndarray) -> np.ndarray:
         x = np.asarray(x, dtype="float32")
         if x.size == 0:
             return x
@@ -380,86 +740,38 @@ class IndexOnlyRecommender:
             return np.zeros_like(x, dtype="float32")
         return (x - x_min) / (x_max - x_min)
 
-
     def _get_doc_tokens(self, product_id: int) -> Optional[np.ndarray]:
-        """상품의 ColBERT 토큰 벡터들 가져오기 (DB 기반)"""
         if product_id in self.colbert_cache:
             return self.colbert_cache[product_id]
-        
-        if product_id in self.colbert_data:
-            vecs = self.colbert_data[product_id]['vecs']
-            
-            # 캐시 관리
-            if len(self.colbert_cache) >= self.cache_limit:
-                self.colbert_cache.pop(next(iter(self.colbert_cache)))
-            
-            self.colbert_cache[product_id] = vecs
-            return vecs
-        
-        return None
+        data = self.colbert_data.get(product_id)
+        if not data:
+            return None
+        vecs = data["vecs"]
+        if len(self.colbert_cache) >= self.cache_limit:
+            self.colbert_cache.pop(next(iter(self.colbert_cache)))
+        self.colbert_cache[product_id] = vecs
+        return vecs
 
-    def compute_maxsim(self, q_tok: np.ndarray, d_tok: np.ndarray, per_token_mode: str = "raw") -> float:
-        """ColBERT MaxSim 계산"""
+    def compute_maxsim(
+        self, q_tok: np.ndarray, d_tok: np.ndarray, per_token_mode: str = "raw"
+    ) -> float:
         if q_tok.size == 0 or d_tok.size == 0:
             return 0.0
-        
         if q_tok.ndim != 2 or d_tok.ndim != 2 or q_tok.shape[1] != d_tok.shape[1]:
-            raise RuntimeError("MaxSim 입력 차원 오류")
-        
-        # 정규화
+            raise RuntimeError("MaxSim shape mismatch")
         q = (q_tok.T / (np.linalg.norm(q_tok, axis=1) + 1e-8)).T
         d = (d_tok.T / (np.linalg.norm(d_tok, axis=1) + 1e-8)).T
-        
-        # 유사도 계산
-        sims = np.dot(q, d.T)  # (Q, L)
-        per_tok = np.max(sims, axis=1)  # (Q,)
-        
+        sims = np.dot(q, d.T)
+        per_tok = np.max(sims, axis=1)
         if per_token_mode == "relu":
             per_tok = np.maximum(per_tok, 0.0)
         elif per_token_mode == "shift01":
             per_tok = (per_tok + 1.0) * 0.5
         elif per_token_mode != "raw":
             raise ValueError("per_token_mode ∈ {raw,relu,shift01}")
-        
         return float(per_tok.sum())
-    
-    @staticmethod
-    def _minmax_norm(x: np.ndarray) -> np.ndarray:
-        """Min-Max 정규화"""
-        x = np.asarray(x, dtype="float32")
-        if x.size == 0:
-            return x
-        x_min, x_max = float(np.min(x)), float(np.max(x))
-        if x_max - x_min < 1e-12:
-            return np.zeros_like(x, dtype="float32")
-        return (x - x_min) / (x_max - x_min)
-    
-    def combine_scores(self, dense_scores, maxsim_scores, w_dense=0.5, w_maxsim=0.5, use_norm=True):
-        """Dense와 ColBERT 점수를 결합"""
-        d = np.asarray(dense_scores, dtype="float32")
-        if maxsim_scores is None:
-            d_used = self._minmax_norm(d) if use_norm else d
-            m_used = np.zeros_like(d_used, dtype="float32")
-            combined = w_dense * d_used
-            return combined, d_used, m_used
-        
-        m = np.asarray(maxsim_scores, dtype="float32")
-        finite_m = np.isfinite(m)
-        
-        if use_norm:
-            d_used = self._minmax_norm(d)
-            m_used = np.zeros_like(m, dtype="float32")
-            if finite_m.any():
-                m_used[finite_m] = self._minmax_norm(m[finite_m])
-        else:
-            d_used = d
-            m_used = np.zeros_like(m, dtype="float32")
-            if finite_m.any():
-                m_used[finite_m] = m[finite_m]
-        
-        combined = w_dense * d_used + w_maxsim * m_used
-        return combined, d_used, m_used
 
+    # ---------- recommend ----------
     def recommend_indices(
         self,
         self_idx: int,
@@ -467,47 +779,36 @@ class IndexOnlyRecommender:
         cand_k: int = 50,
         same_category: bool = True,
         w_dense: Optional[float] = None,
-        w_maxsim: Optional[float] = None
+        w_maxsim: Optional[float] = None,
     ) -> List[int]:
-        """인덱스 기반 추천"""
         if not self.available():
             raise RuntimeError("IndexOnlyRecommender unavailable")
-        
         w_dense = w_dense or self.w_dense
         w_maxsim = w_maxsim or self.w_maxsim
-        
-        # 자기 자신 제외
-        exclude_ids = {self_idx}
-        
-        # 카테고리 필터링
-        target_category = None
-        if same_category and 0 <= self_idx < len(self.metadata):
-            target_category = str(self.metadata.iloc[self_idx].get("Category", ""))
-        
-        # self_idx로 DB에서 직접 벡터 가져오기
-        if 0 <= self_idx < len(self.dense_vectors):
-            query_vec = self.dense_vectors[self_idx].reshape(1, -1)
-        else:
+        if not (0 <= self_idx < len(self.metadata)):
             raise ValueError(f"Invalid self_idx: {self_idx}")
-        
-        # Dense 검색 (쿼리 벡터로 직접 검색)
-        dense_scores, cand = self.dense_index.search(query_vec, cand_k)
+        query_vec = self.dense_vectors[self_idx].reshape(1, -1)
+        dense_scores, cand = self.dense_index.search(query_vec, cand_k)  # type: ignore
         dense_scores = dense_scores[0]
         cand_ids = cand[0].astype(int)
-        
-        # 자기 자신 제외
-        keep_mask = np.array([pid not in exclude_ids for pid in cand_ids], dtype=bool)
+        keep_mask = cand_ids != self_idx
         cand_ids = cand_ids[keep_mask]
         dense_scores = dense_scores[keep_mask]
-        
+        if same_category:
+            target_category = str(self.metadata.iloc[self_idx].get("Category", ""))
+            if target_category:
+                norm_target = _normalize_slot(target_category)
+                meta_cats = (
+                    self.metadata.loc[cand_ids, "Category"].map(_normalize_slot).values
+                )
+                mask = meta_cats == norm_target
+                cand_ids = cand_ids[mask]
+                dense_scores = dense_scores[mask]
         if cand_ids.size == 0:
             return []
-        
-        # MaxSim 재랭킹 (쿼리 상품의 ColBERT 벡터 사용)
         maxsim_scores = None
         if self.colbert_loaded and self_idx in self.colbert_data:
-            q_tok = self.colbert_data[self_idx]['vecs']
-            
+            q_tok = self.colbert_data[self_idx]["vecs"]
             maxsim_list = []
             for pid in cand_ids:
                 doc_tok = self._get_doc_tokens(pid)
@@ -515,22 +816,16 @@ class IndexOnlyRecommender:
                     maxsim_list.append(float("-inf"))
                 else:
                     maxsim_list.append(self.compute_maxsim(q_tok, doc_tok))
-            
             maxsim_scores = np.array(maxsim_list, dtype="float32")
-        
-        # 점수 결합
         if maxsim_scores is not None:
             dense_norm = self._minmax(dense_scores)
             maxsim_norm = self._minmax(maxsim_scores)
             combined = w_dense * dense_norm + w_maxsim * maxsim_norm
         else:
             combined = dense_scores
-        
-        # 정렬 및 상위 선택
         order = np.argsort(combined)[::-1]
         final_ids = cand_ids[order][:top_n]
         final_scores = combined[order][:top_n]
-        
         return list(zip(final_ids.tolist(), final_scores.tolist()))
 
     def recommend(
@@ -540,17 +835,13 @@ class IndexOnlyRecommender:
         top_k: int = 5,
         w_dense: Optional[float] = None,
         w_maxsim: Optional[float] = None,
-        same_category: bool = True
+        same_category: bool = True,
     ) -> List[Dict]:
-        """위치 기반 추천 (기존 API 호환)"""
         if not self.available():
             raise RuntimeError("IndexOnlyRecommender unavailable")
-        
         if not positions:
             return []
-        
-        # 각 위치에 대해 개별 검색 수행
-        all_recommendations = []
+        all_recommendations: List[Dict] = []
         for pos in positions:
             if 0 <= pos < len(self.metadata):
                 rec_results = self.recommend_indices(
@@ -559,37 +850,37 @@ class IndexOnlyRecommender:
                     cand_k=50,
                     same_category=same_category,
                     w_dense=w_dense,
-                    w_maxsim=w_maxsim
+                    w_maxsim=w_maxsim,
                 )
-                
-                for rank, (idx, score) in enumerate(rec_results, 1):
+                for idx, score in rec_results:
                     if 0 <= idx < len(self.metadata):
                         row = self.metadata.iloc[idx]
-                        product = {
-                            "id": str(idx),
-                            "pos": int(idx),
-                            "title": str(row.get("Product_N", "")),
-                            "price": int(row.get("Product_P", 0)),
-                            "tags": [str(row.get("Product_B", "")), str(row.get("Product_G", ""))],
-                            "category": _normalize_slot(row.get("Category", "")),
-                            "gender": _normalize_gender(row.get("Product_G", "")),
-                            "imageUrl": str(row.get("Product_img_U", "")),
-                            "productUrl": str(row.get("Product_U", "")),
-                            "score": float(score)  # 실제 추천 점수
-                        }
-                        all_recommendations.append(product)
-        
-        # 중복 제거 및 상위 k개 선택
+                        all_recommendations.append(
+                            {
+                                "id": str(idx),
+                                "pos": int(idx),
+                                "title": str(row.get("Product_N", "")),
+                                "price": int(row.get("Product_P", 0)),
+                                "tags": [
+                                    str(row.get("Product_B", "")),
+                                    str(row.get("Product_G", "")),
+                                ],
+                                "category": _normalize_slot(row.get("Category", "")),
+                                "gender": _normalize_gender(row.get("Product_G", "")),
+                                "imageUrl": str(row.get("Product_img_U", "")),
+                                "productUrl": str(row.get("Product_U", "")),
+                                "score": float(score),
+                            }
+                        )
         seen = set()
-        unique_recommendations = []
+        uniq = []
         for rec in all_recommendations:
             if rec["pos"] not in seen:
                 seen.add(rec["pos"])
-                unique_recommendations.append(rec)
-                if len(unique_recommendations) >= top_k:
+                uniq.append(rec)
+                if len(uniq) >= top_k:
                     break
-        
-        return unique_recommendations
+        return uniq
 
     def recommend_by_embedding(
         self,
@@ -599,91 +890,70 @@ class IndexOnlyRecommender:
         category: Optional[str] = None,
         top_k: int = 5,
         w_dense: Optional[float] = None,
-        w_maxsim: Optional[float] = None
+        w_maxsim: Optional[float] = None,
     ) -> List[Dict]:
-        """임베딩 기반 추천 (Dense + ColBERT 하이브리드)"""
         if not self.available():
             raise RuntimeError("IndexOnlyRecommender unavailable")
-        
         w_dense = w_dense or self.w_dense
         w_maxsim = w_maxsim or self.w_maxsim
-        
-        # 쿼리 벡터를 FAISS에 직접 검색
-        query_vec = np.array(query_embedding, dtype=np.float32).reshape(1, -1)
-        
-        # 더 많은 후보를 가져와서 ColBERT 재랭킹 수행
-        dense_scores, cand = self.dense_index.search(query_vec, top_k * 10)  # 더 많은 후보
+        qv = np.array(query_embedding, dtype=np.float32).reshape(1, -1)
+        dense_scores, cand = self.dense_index.search(qv, top_k * 10)  # type: ignore
         dense_scores = dense_scores[0]
         cand_ids = cand[0].astype(int)
-        
-        # ColBERT 재랭킹 (제공된 경우)
-        if query_colbert is not None and self.colbert_loaded:
-            query_colbert_vec = np.array(query_colbert, dtype=np.float32)
-            maxsim_scores = []
-            
-            for cand_id in cand_ids:
-                if cand_id in self.colbert_data:
-                    doc_tokens = self.colbert_data[cand_id]['vecs']
-                    if doc_tokens.size > 0:
-                        maxsim_score = self.compute_maxsim(query_colbert_vec, doc_tokens)
-                        maxsim_scores.append(maxsim_score)
-                    else:
-                        maxsim_scores.append(float('-inf'))
-                else:
-                    maxsim_scores.append(float('-inf'))
-            
-            maxsim_scores = np.array(maxsim_scores, dtype=np.float32)
-            
-            # Dense + ColBERT 점수 결합
-            combined, dense_used, maxsim_used = self.combine_scores(
-                dense_scores, maxsim_scores, w_dense, w_maxsim, use_norm=True
+        if category:
+            norm_c = _normalize_slot(category)
+            meta_cats = (
+                self.metadata.loc[cand_ids, "Category"].map(_normalize_slot).values
             )
-        else:
-            # ColBERT가 없으면 Dense 점수만 사용
-            combined = dense_scores
-        
-        # 정렬
+            mask = meta_cats == norm_c
+            cand_ids = cand_ids[mask]
+            dense_scores = dense_scores[mask]
+        if cand_ids.size == 0:
+            return []
+        combined = dense_scores
+        if query_colbert is not None and self.colbert_loaded:
+            q_tok = np.array(query_colbert, dtype=np.float32)
+            maxsim_list = []
+            for pid in cand_ids:
+                doc_tokens = self.colbert_data.get(pid, {}).get("vecs")
+                if isinstance(doc_tokens, np.ndarray) and doc_tokens.size > 0:
+                    maxsim_list.append(self.compute_maxsim(q_tok, doc_tokens))
+                else:
+                    maxsim_list.append(float("-inf"))
+            maxsim_scores = np.array(maxsim_list, dtype=np.float32)
+            d_used = self._minmax(dense_scores)
+            m_used = self._minmax(maxsim_scores)
+            combined = w_dense * d_used + w_maxsim * m_used
         order = np.argsort(combined)[::-1]
         final_ids = cand_ids[order][:top_k]
-        
-        # 결과 생성
         results = []
         for rank, idx in enumerate(final_ids, 1):
             if 0 <= idx < len(self.metadata):
                 row = self.metadata.iloc[idx]
-                
-                # 카테고리 필터링
-                if category:
-                    product_category = _normalize_slot(row.get("Category", ""))
-                    if product_category != category:
-                        continue
-                
-                product = {
-                    "id": str(idx),
-                    "pos": int(idx),
-                    "title": str(row.get("Product_N", "")),
-                    "price": int(row.get("Product_P", 0)),
-                    "tags": [str(row.get("Product_B", "")), str(row.get("Product_G", ""))],
-                    "category": _normalize_slot(row.get("Category", "")),
-                    "gender": _normalize_gender(row.get("Product_G", "")),
-                    "imageUrl": str(row.get("Product_img_U", "")),
-                    "productUrl": str(row.get("Product_U", "")),
-                    "score": float(combined[rank - 1])
-                }
-                results.append(product)
-        
+                results.append(
+                    {
+                        "id": str(idx),
+                        "pos": int(idx),
+                        "title": str(row.get("Product_N", "")),
+                        "price": int(row.get("Product_P", 0)),
+                        "tags": [
+                            str(row.get("Product_B", "")),
+                            str(row.get("Product_G", "")),
+                        ],
+                        "category": _normalize_slot(row.get("Category", "")),
+                        "gender": _normalize_gender(row.get("Product_G", "")),
+                        "imageUrl": str(row.get("Product_img_U", "")),
+                        "productUrl": str(row.get("Product_U", "")),
+                        "score": float(combined[order][:top_k][rank - 1]),
+                    }
+                )
         return results
 
 
+# -----------------------------
+# DbPosRecommender (legacy dense)
+# -----------------------------
 class DbPosRecommender:
-    """
-    DB-backed recommender. Loads products and embeddings into memory (NumPy) and
-    performs cosine similarity + price weighting, similar to PosRecommender.
-    Tables expected:
-      public.products2(pos, "Product_U", "Product_Desc", "Product_P", "Category")
-      public.embeddings2(pos, dense BYTEA) - uses dense column only for legacy compatibility
-    """
-
     def __init__(self, cfg: Optional[DbConfig] = None) -> None:
         self.cfg = cfg or DbConfig()
         self.logger = logging.getLogger(__name__)
@@ -692,59 +962,56 @@ class DbPosRecommender:
         self.emb: Optional[np.ndarray] = None
         self.emb_norm: Optional[np.ndarray] = None
         self.prices: Optional[np.ndarray] = None
-
         if self.cfg.url and create_engine is not None and text is not None:
             try:
                 self.engine = create_engine(
                     self.cfg.url,
                     pool_pre_ping=True,
                     connect_args={
-                        # Keep TCP healthy
                         "keepalives": 1,
                         "keepalives_idle": 30,
                         "keepalives_interval": 10,
                         "keepalives_count": 5,
-                        # Fast fail when DB is unreachable (seconds)
                         "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
                     },
                 )
                 with self.engine.connect() as conn:
                     conn.execute(text("SELECT 1"))
-                self.logger.info("[DbPosRecommender] Connected to DB host=%s db=%s", self.cfg.host, self.cfg.name)
+                self.logger.info("[DbPos] DB connected")
                 self._load_all()
                 if self.available():
-                    self.logger.info(
-                        "[DbPosRecommender] Loaded %d products and embeddings", len(self.products)
-                    )
-                else:
-                    self.logger.warning("[DbPosRecommender] Loaded data but recommender marked unavailable")
+                    self.logger.info(f"[DbPos] Loaded {len(self.products)} products")
             except Exception as exc:
-                self.logger.exception("[DbPosRecommender] Initialization failed: %s", exc)
-                # Leave unavailable; route will fall back
+                self.logger.exception(f"[DbPos] init failed: {exc}")
                 self.engine = None
 
     def _load_all(self) -> None:
         assert self.engine is not None and text is not None
-        # Load products from products2 (updated to use new table)
         with self.engine.begin() as conn:
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT pos,
-                           "Product_U",
-                           "Product_img_U",
-                           "Product_N",
-                           "Product_Desc",
-                           "Product_P",
-                           "Category",
-                           "Product_B",
-                           "Product_G",
-                           "Image_P"
-                    FROM public.products2
-                    ORDER BY pos ASC
-                    """
+            rows = (
+                (
+                    conn.execute(
+                        text(
+                            """
+                SELECT pos,
+                       "Product_U",
+                       "Product_img_U",
+                       "Product_N",
+                       "Product_Desc",
+                       "Product_P",
+                       "Category",
+                       "Product_B",
+                       "Product_G",
+                       "Image_P"
+                FROM public.products2
+                ORDER BY pos ASC
+                """
+                        )
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
         self.products = []
         for r in rows:
             title = r.get("Product_N") or r.get("Product_Desc") or ""
@@ -757,8 +1024,7 @@ class DbPosRecommender:
                 tags.append(str(gender_raw))
             image_url = r.get("Product_img_U") or r.get("Image_P") or None
             product_url = r.get("Product_U")
-            category_raw = r.get("Category")
-            norm_cat = _normalize_slot(category_raw)
+            norm_cat = _normalize_slot(r.get("Category"))
             gender_norm = _normalize_gender(gender_raw)
             self.products.append(
                 {
@@ -773,56 +1039,43 @@ class DbPosRecommender:
                     "productUrl": product_url,
                 }
             )
-
-        # Load embeddings from embeddings2 (dense column only for legacy compatibility)
         with self.engine.begin() as conn:
             data = conn.execute(
                 text(
                     """
-                    SELECT pos, dense
-                    FROM public.embeddings2
-                    WHERE dense IS NOT NULL
-                    ORDER BY pos ASC
-                    """
+                SELECT pos, dense
+                FROM public.embeddings2
+                WHERE dense IS NOT NULL
+                ORDER BY pos ASC
+                """
                 )
             ).all()
-        
         if not data:
-            self.logger.error("[DbPosRecommender] No embeddings2 data found")
+            self.logger.error("[DbPos] embeddings2 empty")
             self.products = []
             self.emb = None
             return
-        
-        # Convert BYTEA to numpy array
         dense_vectors = []
         for row in data:
-            if row[1]:  # dense column is not None
+            if row[1]:
                 dense_vec = np.frombuffer(row[1], dtype=np.float32)
                 dense_vectors.append(dense_vec)
-        
         if not dense_vectors:
-            self.logger.error("[DbPosRecommender] No valid dense vectors found")
+            self.logger.error("[DbPos] No valid dense vectors")
             self.products = []
             self.emb = None
             return
-        
-        mat = np.vstack(dense_vectors)
-
-        # Sanity check
+        mat = np.vstack(dense_vectors).astype(np.float32, copy=False)
         if len(self.products) != mat.shape[0]:
-            # mismatch: mark unavailable
             self.logger.error(
-                "[DbPosRecommender] Product/embedding count mismatch: products=%d, embeddings_rows=%d",
-                len(self.products),
-                mat.shape[0],
+                f"[DbPos] count mismatch: products={len(self.products)}, emb_rows={mat.shape[0]}"
             )
             self.products = []
             self.emb = None
             self.emb_norm = None
             self.prices = None
             return
-
-        self.emb = mat.astype(np.float32, copy=False)
+        self.emb = mat
         norms = np.linalg.norm(self.emb, axis=1)
         norms[norms == 0] = 1e-8
         self.emb_norm = self.emb / norms[:, None]
@@ -832,40 +1085,21 @@ class DbPosRecommender:
         return self.emb_norm is not None and len(self.products) > 0
 
     def _calculate_similarity_scores(
-        self, 
-        query_vec: np.ndarray, 
-        *, 
-        alpha: float = 0.38, 
-        w1: float = 0.97, 
-        w2: float = 0.03
+        self,
+        query_vec: np.ndarray,
+        *,
+        alpha: float = 0.38,
+        w1: float = 0.97,
+        w2: float = 0.03,
     ) -> np.ndarray:
-        """
-        코사인 유사도 + 가격 가중치 계산 공통 함수
-        
-        Args:
-            query_vec: 정규화된 쿼리 벡터
-            alpha: 가격 가중치 파라미터
-            w1: 유사도 가중치
-            w2: 가격 가중치
-            
-        Returns:
-            np.ndarray: 최종 점수 배열
-        """
-        emb_norm = self.emb_norm  # type: ignore[assignment]
-        prices = self.prices  # type: ignore[assignment]
-        
-        # 코사인 유사도 계산
+        emb_norm = self.emb_norm  # type: ignore
+        prices = self.prices  # type: ignore
         sim = emb_norm @ query_vec
-        
-        # 가격 가중치 계산
         avg_price = float(prices.mean())
         clog = np.log1p(prices)
         qlog = np.log1p(avg_price)
         price_score = np.exp(-alpha * np.abs(clog - qlog))
-        
-        # 최종 점수 계산
         total = w1 * sim + w2 * price_score
-        
         return total
 
     def recommend(
@@ -879,31 +1113,22 @@ class DbPosRecommender:
     ) -> List[Dict]:
         if not self.available():
             raise RuntimeError("DbPosRecommender unavailable")
-
         n = len(self.products)
         if any(p < 0 or p >= n for p in positions):
             raise ValueError("positions out of range")
-
         k = max(1, min(int(top_k), n))
-        emb_norm = self.emb_norm  # type: ignore[assignment]
-
-        # 쿼리 벡터 생성 및 정규화
-        q = emb_norm[positions].mean(axis=0)
+        q = self.emb_norm[positions].mean(axis=0)  # type: ignore
         qn = np.linalg.norm(q)
         if qn == 0:
             qn = 1e-8
         q = q / qn
-
-        # 공통 함수로 점수 계산
         total = self._calculate_similarity_scores(q, alpha=alpha, w1=w1, w2=w2)
         total[np.array(positions, dtype=int)] = -np.inf
-
         if k >= n:
             top_idx = np.argsort(-total)
         else:
             part = np.argpartition(-total, kth=k - 1)[:k]
             top_idx = part[np.argsort(-total[part])]
-
         out: List[Dict] = []
         for i in top_idx.tolist():
             p = dict(self.products[i])
@@ -921,82 +1146,53 @@ class DbPosRecommender:
         w1: float = 0.97,
         w2: float = 0.03,
     ) -> List[Dict]:
-        """
-        외부 이미지에서 생성된 임베딩 벡터로 추천
-        
-        Args:
-            query_embedding: 쿼리 임베딩 벡터
-            category: 카테고리 필터 (top, pants, shoes, outer)
-            top_k: 반환할 추천 개수
-            alpha: 가격 가중치 파라미터
-            w1: 유사도 가중치
-            w2: 가격 가중치
-            
-        Returns:
-            List[Dict]: 추천 아이템 리스트
-        """
         if not self.available():
             raise RuntimeError("DbPosRecommender unavailable")
-
         n = len(self.products)
         k = max(1, min(int(top_k), n))
-
-        # 쿼리 벡터 정규화
         query_vec = np.array(query_embedding, dtype=np.float32)
-        query_norm = np.linalg.norm(query_vec)
-        if query_norm == 0:
-            query_norm = 1e-8
-        query_vec = query_vec / query_norm
-
-        # 공통 함수로 점수 계산
+        qn = np.linalg.norm(query_vec)
+        if qn == 0:
+            qn = 1e-8
+        query_vec = query_vec / qn
         total = self._calculate_similarity_scores(query_vec, alpha=alpha, w1=w1, w2=w2)
-
-        # 카테고리 필터링
         if category:
-            category_indices = []
+            norm_c = _normalize_slot(category)
+            filt = np.full(n, -np.inf, dtype=np.float32)
             for i, product in enumerate(self.products):
-                product_category = _normalize_slot(product.get("category", ""))
-                if product_category == category:
-                    category_indices.append(i)
-            
-            if not category_indices:
-                return []
-            
-            # 카테고리 필터링된 인덱스로 점수 재계산
-            filtered_total = np.full(n, -np.inf)
-            for idx in category_indices:
-                filtered_total[idx] = total[idx]
-            total = filtered_total
-
-        # 상위 k개 선택
+                if _normalize_slot(product.get("category", "")) == norm_c:
+                    filt[i] = total[i]
+            total = filt
         if k >= n:
             top_idx = np.argsort(-total)
         else:
             part = np.argpartition(-total, kth=k - 1)[:k]
             top_idx = part[np.argsort(-total[part])]
-
         out: List[Dict] = []
         for i in top_idx.tolist():
-            if total[i] == -np.inf:  # 필터링된 항목 건너뛰기
+            if total[i] == -np.inf:
                 continue
             p = dict(self.products[i])
             p["score"] = float(total[i])
             out.append(p)
-        
         return out
 
 
+# -----------------------------
+# Module-level singletons
+# -----------------------------
 _flag = os.getenv("DB_RECO_ENABLED", "").strip().lower()
-# Enabled by default unless explicitly disabled via env
 _db_enabled = False if _flag in {"0", "false", "off", "no"} else True
-db_pos_recommender = DbPosRecommender() if _db_enabled else DbPosRecommender(DbConfig(host="", user=""))
 
-# IndexOnlyRecommender 인스턴스 생성 (DB 기반)
+db_pos_recommender = (
+    DbPosRecommender() if _db_enabled else DbPosRecommender(DbConfig(host="", user=""))
+)
+
 if _db_enabled:
     try:
         index_only_recommender = IndexOnlyRecommender()
     except Exception as e:
-        logging.getLogger(__name__).warning(f"IndexOnlyRecommender 초기화 실패: {e}")
+        logging.getLogger(__name__).warning(f"IndexOnlyRecommender init failed: {e}")
         index_only_recommender = None
 else:
     index_only_recommender = None
